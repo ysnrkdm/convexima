@@ -1,15 +1,20 @@
+mod basis_solver;
 mod eta_matrices;
 mod lu;
 
 use log::debug;
 
 use crate::{
+    consts::STABILITY_COEFF,
     datatype::{CsMat, CsVec},
     problem::{ComparisonOp, Problem},
     solution::Solution,
     solver::{Error, Solver, SolverTryNew},
+    solvers::revised_dual_simplex::lu::{gplu::GPLUFactorizer, LUFactorizer},
     sparse::{ScatteredVec, SparseVec},
 };
+
+use self::basis_solver::BasisSolver;
 
 #[derive(Clone, Debug)]
 enum VarState {
@@ -38,6 +43,7 @@ pub struct SimpleSolver {
     orig_var_mins: Vec<f64>,
     orig_var_maxs: Vec<f64>,
     orig_constraints: CsMat, // excluding rhs
+    orig_constraints_csc: CsMat,
     orig_rhs: Vec<f64>,
 
     // Variables
@@ -59,6 +65,9 @@ pub struct SimpleSolver {
     // Recomputed on each pivot
     col_coeffs: SparseVec,
     row_coeffs: ScatteredVec,
+
+    //
+    basis_solver: BasisSolver,
 }
 
 impl SolverTryNew<SimpleSolver> for SimpleSolver {
@@ -185,7 +194,7 @@ impl SolverTryNew<SimpleSolver> for SimpleSolver {
             r
         };
 
-        // let orig_constraints_csc = orig_constraints.to_csc();
+        let orig_constraints_csc = orig_constraints.to_csc();
 
         let need_artificial_obj = !is_primal_feasible && !is_dual_feasible;
 
@@ -214,23 +223,17 @@ impl SolverTryNew<SimpleSolver> for SimpleSolver {
 
         let cur_obj_val = if need_artificial_obj { 0.0 } else { obj_val };
 
-        // let mut scratch = ScratchSpace::with_capacity(num_constraints);
+        let gplu = GPLUFactorizer::new(STABILITY_COEFF);
 
-        // let orig_constraints_csc = orig_constraints.to_csc();
-        // let lu_factors = lu_factorize(
-        //     basic_vars.len(),
-        //     |c| {
-        //         orig_constraints_csc
-        //             .outer_view(basic_vars[c])
-        //             .unwrap()
-        //             .into_raw_storage()
-        //     },
-        //     0.1,
-        //     &mut scratch,
-        // )
-        // .unwrap();
-
-        // let lu_factors_transp = lu_factors.transpose();
+        let orig_constraints_csc = orig_constraints.to_csc();
+        let lu_factors = gplu
+            .lu_factorize(basic_vars.len(), |c| {
+                orig_constraints_csc
+                    .outer_view(basic_vars[c])
+                    .unwrap()
+                    .into_raw_storage()
+            })
+            .unwrap();
 
         let res = Self {
             orig_problem: problem.clone(),
@@ -247,6 +250,7 @@ impl SolverTryNew<SimpleSolver> for SimpleSolver {
             orig_var_mins,
             orig_var_maxs,
             orig_constraints,
+            orig_constraints_csc,
             orig_rhs,
 
             // Variables
@@ -267,13 +271,8 @@ impl SolverTryNew<SimpleSolver> for SimpleSolver {
 
             col_coeffs: SparseVec::new(),
             row_coeffs: ScatteredVec::empty(num_total_vars - num_constraints),
-            // inv_basis_matrix: InvertedBasisMatrix {
-            //     lu_factors,
-            //     lu_factors_transp,
-            //     scratch,
-            //     eta_matrices: EtaMatrices::new(num_constraints),
-            //     rhs: ScatteredVec::empty(num_constraints),
-            // },
+
+            basis_solver: BasisSolver::new(lu_factors, num_constraints),
         };
 
         debug!(
@@ -336,6 +335,18 @@ impl SimpleSolver {
                 let pivot_info = self.choose_entering_col_dual(row, leaving_new_value)?;
                 self.calc_col_coeffs(pivot_info.col);
                 self.pivot(&pivot_info);
+            } else {
+                debug!(
+                    "Restored feasibility at {}-th iteration, {}: {}",
+                    iter,
+                    if self.is_dual_feasible {
+                        "obj."
+                    } else {
+                        "artificial obj."
+                    },
+                    self.cur_obj_val,
+                );
+                break;
             }
         }
 
@@ -346,10 +357,37 @@ impl SimpleSolver {
     fn recalc_obj_coeffs(&mut self) {}
 
     fn optimize(&mut self) -> Result<(), Error> {
-        todo!();
+        for iter in 0.. {
+            if let Some(pivot_info) = self.choose_pivot()? {
+                self.pivot(&pivot_info);
+            } else {
+                debug!(
+                    "Found optimum in {} iterations, obj.: {}",
+                    iter + 1,
+                    self.cur_obj_val,
+                );
+                break;
+            }
+        }
+
+        self.is_dual_feasible = true;
+        Ok(())
     }
 
     fn get_optimal_variables(&self) -> Vec<f64> {
+        (0..self.num_vars)
+            .map(|var| self.get_optimal_variable(var))
+            .collect::<Vec<f64>>()
+    }
+
+    fn get_optimal_variable(&self, var: usize) -> f64 {
+        match self.var_states[var] {
+            VarState::Basic(idx) => self.basic_var_vals[idx],
+            VarState::NonBasic(idx) => self.nb_var_vals[idx],
+        }
+    }
+
+    fn choose_pivot(&mut self) -> Result<Option<PivotInfo>, Error> {
         todo!();
     }
 
@@ -438,6 +476,15 @@ impl SimpleSolver {
         self.var_states[entering_var] = VarState::Basic(pivot_elem.row);
         self.nb_vars[pivot_info.col] = leaving_var;
         self.var_states[leaving_var] = VarState::NonBasic(pivot_info.col);
+
+        //
+        self.basis_solver.push_eta_matrix_or_reset(
+            &self.col_coeffs,
+            pivot_elem.row,
+            pivot_coeff,
+            &self.orig_constraints_csc,
+            &self.basic_vars,
+        );
     }
 }
 

@@ -1,4 +1,4 @@
-mod gplu;
+pub mod gplu;
 
 use std::ops::Deref;
 
@@ -35,6 +35,21 @@ impl std::fmt::Debug for LUFactors {
     }
 }
 
+impl LUFactors {
+    pub fn transpose(&self) -> LUFactors {
+        LUFactors {
+            lower: self.upper.transpose(),
+            upper: self.lower.transpose(),
+            row_permutation: self.col_permutation.clone(),
+            col_permutation: self.row_permutation.clone(),
+        }
+    }
+
+    pub fn nnz(&self) -> usize {
+        self.lower.nondiag.nnz() + self.upper.nondiag.nnz() + self.lower.cols()
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct TriangleMat {
     nondiag: SparseMat,
@@ -49,6 +64,13 @@ impl TriangleMat {
 
     fn cols(&self) -> usize {
         self.nondiag.cols()
+    }
+
+    pub(crate) fn transpose(&self) -> TriangleMat {
+        TriangleMat {
+            nondiag: self.nondiag.transpose(),
+            diag: self.diag.clone(),
+        }
     }
 
     #[cfg(test)]
@@ -107,7 +129,7 @@ struct Permutation {
     orig_from_new: Vec<usize>,
 }
 
-trait LUFactorizer {
+pub trait LUFactorizer {
     fn lu_factorize<'a>(
         self,
         col_size: usize,
