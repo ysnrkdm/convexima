@@ -28,6 +28,7 @@ struct NonBasicVarState {
     at_max: bool,
 }
 
+#[derive(Debug)]
 pub struct SimpleSolver {
     orig_problem: Problem,
 
@@ -148,9 +149,9 @@ impl SolverTryNew<SimpleSolver> for SimpleSolver {
             orig_rhs.push(rhs);
 
             let (slack_var_min, slack_var_max) = match cmp_op {
-                ComparisonOp::Eq => (0.0, f64::INFINITY),
-                ComparisonOp::Le => (f64::INFINITY, 0.0),
-                ComparisonOp::Ge => (0.0, 0.0),
+                ComparisonOp::Le => (0.0, f64::INFINITY),
+                ComparisonOp::Ge => (f64::NEG_INFINITY, 0.0),
+                ComparisonOp::Eq => (0.0, 0.0),
             };
 
             orig_var_mins.push(slack_var_min);
@@ -194,8 +195,6 @@ impl SolverTryNew<SimpleSolver> for SimpleSolver {
             }
             r
         };
-
-        let orig_constraints_csc = orig_constraints.to_csc();
 
         let need_artificial_obj = !is_primal_feasible && !is_dual_feasible;
 
@@ -433,7 +432,7 @@ impl SimpleSolver {
 
     fn calc_row_coeffs(&mut self, r_constr: usize) {
         self.basis_solver
-            .solve_transpose(std::iter::once((r_constr, &1.0)))
+            .solve_transpose_for_vector(std::iter::once((r_constr, &1.0)))
             .to_sparse_vec(&mut self.inv_basis_row_coeffs);
 
         self.row_coeffs.clear_and_resize(self.nb_vars.len());
@@ -653,8 +652,60 @@ fn into_resized(vec: CsVec, len: usize) -> CsVec {
 
 #[cfg(test)]
 mod tests {
+    use std::f64::{INFINITY, NEG_INFINITY};
+
     use super::*;
+    use crate::problem::OptimizationDirection::*;
 
     #[test]
-    fn test() {}
+    fn initialize_test() {
+        let mut problem = Problem::new(Minimize);
+        let x1 = problem.add_var(2.0, (NEG_INFINITY, 0.0));
+        let x2 = problem.add_var(1.0, (5.0, INFINITY));
+        problem.add_constraint([(x1, 1.0), (x2, 1.0)], ComparisonOp::Le, 6.0);
+        problem.add_constraint([(x1, 1.0), (x2, 2.0)], ComparisonOp::Le, 6.0);
+        problem.add_constraint([(x1, 1.0), (x2, 1.0)], ComparisonOp::Ge, 2.0);
+        problem.add_constraint([(x1, 0.0), (x2, 1.0)], ComparisonOp::Eq, 3.0);
+        let res_solver = SimpleSolver::try_new(&problem);
+        assert!(res_solver.is_ok());
+        let solver = res_solver.unwrap();
+        assert_eq!(solver.num_vars, 2);
+        assert!(!solver.is_primal_feasible);
+        assert!(!solver.is_dual_feasible);
+        assert_eq!(&solver.orig_obj_coeffs, &[2.0, 1.0, 0.0, 0.0, 0.0, 0.0]);
+
+        assert_eq!(
+            &solver.orig_var_mins,
+            &[NEG_INFINITY, 5.0, 0.0, 0.0, NEG_INFINITY, 0.0],
+        );
+        assert_eq!(
+            &solver.orig_var_maxs,
+            &[0.0, INFINITY, INFINITY, INFINITY, 0.0, 0.0],
+        );
+
+        // TODO: add more assertions to inspect the object
+    }
+
+    #[test]
+    fn restore_primal_feasibility_test() {
+        let mut problem = Problem::new(Minimize);
+        let x1 = problem.add_var(-3.0, (NEG_INFINITY, 20.0));
+        let x2 = problem.add_var(-4.0, (5.0, INFINITY));
+        problem.add_constraint([(x1, 1.0), (x2, 1.0)], ComparisonOp::Le, 20.0);
+        problem.add_constraint([(x1, -1.0), (x2, 4.0)], ComparisonOp::Le, 20.0);
+
+        let res_solver = SimpleSolver::try_new(&problem);
+        assert!(res_solver.is_ok());
+        let mut solver = res_solver.unwrap();
+        assert_eq!(solver.num_vars, 2);
+        assert!(!solver.is_primal_feasible);
+        assert!(!solver.is_dual_feasible);
+
+        println!("{:?}", solver);
+
+        let solved = solver.restore_primal_feasibility();
+        assert!(solved.is_ok(), "Err: {:?}", solved.err());
+
+        println!("{:?}", solver);
+    }
 }

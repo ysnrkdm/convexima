@@ -11,6 +11,7 @@ use super::{
     lu::{gplu::GPLUFactorizer, LUFactorizer, LUFactors},
 };
 
+#[derive(Debug)]
 pub struct BasisSolver {
     lu_factors: LUFactors,
     lu_factors_transpose: LUFactors,
@@ -83,9 +84,10 @@ impl BasisSolver {
     }
 
     // Solve Bd=a for d where a = rhs
-    pub fn solve(&mut self, rhs: &ScatteredVec) -> ScatteredVec {
+    fn solve(&mut self, rhs: &ScatteredVec) -> ScatteredVec {
         let mut d = self.lu_factors.solve(rhs);
 
+        // apply eta matrices (Vanderbei p.139)
         for idx in 0..self.eta_matrices.len() {
             let row_leaving = self.eta_matrices.leaving_rows[idx];
             let coeff = *d.get(row_leaving);
@@ -97,11 +99,33 @@ impl BasisSolver {
         d
     }
 
-    pub fn solve_transpose<'a>(
+    pub fn solve_transpose_for_vector<'a>(
         &mut self,
-        rhs: impl Iterator<Item = (usize, &'a f64)>,
-    ) -> &ScatteredVec {
-        todo!();
+        rhs_vec: impl Iterator<Item = (usize, &'a f64)>,
+    ) -> ScatteredVec {
+        let mut rhs = ScatteredVec::empty(self.eta_matrices.coeff_cols.rows());
+        rhs.set(rhs_vec);
+
+        self.solve_transpose(&rhs)
+    }
+
+    fn solve_transpose(&mut self, rhs: &ScatteredVec) -> ScatteredVec {
+        let mut d = rhs.clone();
+
+        // apply eta matrices in reverse (Vanderbei p.139)
+        for idx in (0..self.eta_matrices.len()).rev() {
+            let mut coeff = 0.0;
+            // eta col `dot` rhs_transposed
+            for (i, &val) in self.eta_matrices.coeff_cols.col_iter(idx) {
+                coeff += val * rhs.get(i);
+            }
+            let row_leaving = self.eta_matrices.leaving_rows[idx];
+            *d.get_mut(row_leaving) -= coeff;
+        }
+
+        let mut x = self.lu_factors_transpose.solve(&d);
+
+        x
     }
 }
 

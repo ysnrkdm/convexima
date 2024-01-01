@@ -1,5 +1,6 @@
 use crate::{problem::Problem, solution::Solution};
 
+#[derive(Debug)]
 pub enum Error {
     Infeasible,
     Unbounded,
