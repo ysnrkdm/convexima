@@ -1,5 +1,6 @@
 use crate::problem::{OptimizationDirection, Variable};
 
+#[derive(Debug)]
 pub struct Solution {
     direction: OptimizationDirection,
     num_vars: usize,

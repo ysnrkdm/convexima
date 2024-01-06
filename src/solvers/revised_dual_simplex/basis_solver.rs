@@ -1,5 +1,3 @@
-use std::borrow::Borrow;
-
 use crate::{
     consts::STABILITY_COEFF,
     datatype::CsMat,
@@ -73,6 +71,19 @@ impl BasisSolver {
         }
     }
 
+    pub fn reset_if_eta_matrices_too_long(
+        &mut self,
+        orig_constraints_csc: &CsMat,
+        basic_vars: &[usize],
+    ) -> bool {
+        if self.eta_matrices.len() > 8 {
+            self.reset(orig_constraints_csc, basic_vars);
+            true
+        } else {
+            false
+        }
+    }
+
     pub fn solve_for_vector<'a>(
         &mut self,
         rhs_vec: impl Iterator<Item = (usize, &'a f64)>,
@@ -109,7 +120,7 @@ impl BasisSolver {
         self.solve_transpose(&rhs)
     }
 
-    fn solve_transpose(&mut self, rhs: &ScatteredVec) -> ScatteredVec {
+    fn solve_transpose(&self, rhs: &ScatteredVec) -> ScatteredVec {
         let mut d = rhs.clone();
 
         // apply eta matrices in reverse (Vanderbei p.139)
@@ -123,15 +134,17 @@ impl BasisSolver {
             *d.get_mut(row_leaving) -= coeff;
         }
 
-        let mut x = self.lu_factors_transpose.solve(&d);
+        self.lu_factors_transpose.solve(&d)
+    }
 
-        x
+    pub fn solve_dense_lu_factors_transpose(&self, dense_rhs: &Vec<f64>) -> Vec<f64> {
+        self.lu_factors_transpose.solve_dense(dense_rhs)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    // use super::*;
 
     #[test]
     fn test_solve_base() {}

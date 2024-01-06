@@ -2,6 +2,8 @@ mod basis_solver;
 mod eta_matrices;
 mod lu;
 
+use std::f64::NEG_INFINITY;
+
 use log::debug;
 
 use crate::{
@@ -331,9 +333,13 @@ impl SimpleSolver {
     fn restore_primal_feasibility(&mut self) -> Result<(), Error> {
         for iter in 0.. {
             if let Some((row, leaving_new_value)) = self.choose_pivot_row_dual() {
+                // println!("row {:?}, leaving_new_value: {:?}", row, leaving_new_value);
                 self.calc_row_coeffs(row);
+                // println!("row coeffs updated to {:?}", self.row_coeffs);
                 let pivot_info = self.choose_entering_col_dual(row, leaving_new_value)?;
+                // println!("picked pivot_info: {:?}", pivot_info);
                 self.calc_col_coeffs(pivot_info.col);
+                // println!("col coeffs updated to {:?}", self.col_coeffs);
                 self.pivot(&pivot_info);
             } else {
                 debug!(
@@ -355,7 +361,32 @@ impl SimpleSolver {
     }
 
     fn recalc_obj_coeffs(&mut self) {
-        todo!();
+        self.basis_solver
+            .reset_if_eta_matrices_too_long(&self.orig_constraints_csc, &self.basic_vars);
+
+        let multipliers = {
+            let mut rhs = vec![0.0; self.orig_constraints.rows()];
+            for (c, &var) in self.basic_vars.iter().enumerate() {
+                rhs[c] = self.orig_obj_coeffs[var];
+            }
+            self.basis_solver.solve_dense_lu_factors_transpose(&rhs)
+        };
+
+        self.nb_var_obj_coeffs.clear();
+        for &var in &self.nb_vars {
+            let col = self.orig_constraints_csc.outer_view(var).unwrap();
+            let dot_prod: f64 = col.iter().map(|(r, val)| val * multipliers[r]).sum();
+            self.nb_var_obj_coeffs
+                .push(self.orig_obj_coeffs[var] - dot_prod);
+        }
+
+        self.cur_obj_val = 0.0;
+        for (r, &var) in self.basic_vars.iter().enumerate() {
+            self.cur_obj_val += self.orig_obj_coeffs[var] * self.basic_var_vals[r];
+        }
+        for (c, &var) in self.nb_vars.iter().enumerate() {
+            self.cur_obj_val += self.orig_obj_coeffs[var] * self.nb_var_vals[c];
+        }
     }
 
     fn optimize(&mut self) -> Result<(), Error> {
@@ -390,7 +421,139 @@ impl SimpleSolver {
     }
 
     fn choose_pivot(&mut self) -> Result<Option<PivotInfo>, Error> {
-        todo!();
+        let entering_col = {
+            let filtered_obj_coeffs = self
+                .nb_var_obj_coeffs
+                .iter()
+                .zip(&self.nb_var_states)
+                .enumerate()
+                .filter_map(|(col, (&obj_coeff, var_state))| match () {
+                    _ if var_state.at_min && obj_coeff > -EPS => None,
+                    _ if var_state.at_max && obj_coeff < EPS => None,
+                    _ => Some((col, obj_coeff)),
+                })
+                .rev();
+
+            let best_col = filtered_obj_coeffs
+                .map(|(col, obj_coeff)| (col, obj_coeff.abs()))
+                .max_by(|(_col1, score1), (_col2, score2)| score1.partial_cmp(score2).unwrap());
+
+            if let Some((col, _score)) = best_col {
+                col
+            } else {
+                return Ok(None);
+            }
+        };
+
+        let entering_col_val = self.nb_var_vals[entering_col];
+        let entering_diff_positive = self.nb_var_obj_coeffs[entering_col] < 0.0;
+        let entering_other_val = if entering_diff_positive {
+            self.orig_var_maxs[self.nb_vars[entering_col]]
+        } else {
+            self.orig_var_mins[self.nb_vars[entering_col]]
+        };
+
+        self.calc_col_coeffs(entering_col);
+
+        let get_leaving_var_step = |r: usize, coeff: f64| {
+            let val = self.basic_var_vals[r];
+            if (entering_diff_positive && coeff < 0.0) || (!entering_diff_positive && coeff > 0.0) {
+                let max = self.basic_var_maxs[r];
+                if val < max {
+                    max - val
+                } else {
+                    0.0
+                }
+            } else {
+                let min = self.basic_var_mins[r];
+                if val > min {
+                    val - min
+                } else {
+                    0.0
+                }
+            }
+        };
+
+        // Harris rule. See e.g.
+        // Gill, P. E., Murray, W., Saunders, M. A., & Wright, M. H. (1989).
+        // A practical anti-cycling procedure for linearly constrained optimization.
+        // Mathematical Programming, 45(1-3), 437-474.
+        //
+        // https://link.springer.com/content/pdf/10.1007/BF01589114.pdf
+
+        // First, we determine the max change in entering variable so that basic variables
+        // remain feasible using relaxed bounds.
+        let mut max_step = (entering_other_val - entering_col_val).abs();
+        for (r, &coeff) in self.col_coeffs.iter() {
+            let coeff_abs = coeff.abs();
+            if coeff_abs < EPS {
+                continue;
+            }
+
+            // By which amount can we change the entering variable so that the limit on this
+            // basic var is not violated. The var with the minimum such amount becomes leaving.
+            let cur_step = (get_leaving_var_step(r, coeff) + EPS) / coeff_abs;
+            if cur_step < max_step {
+                max_step = cur_step;
+            }
+        }
+
+        // Second, we choose among variables with steps less than max_step a variable with the biggest
+        // abs. coefficient as the leaving variable. This means that we get numerically more stable
+        // basis at the price of slight infeasibility of some basic variables.
+        let mut leaving_row = None;
+        let mut leaving_new_val = 0.0;
+        let mut pivot_coeff_abs = NEG_INFINITY;
+        let mut pivot_coeff = 0.0;
+        for (r, &coeff) in self.col_coeffs.iter() {
+            let coeff_abs = coeff.abs();
+            if coeff_abs < EPS {
+                continue;
+            }
+
+            let cur_step = get_leaving_var_step(r, coeff) / coeff_abs;
+            if cur_step <= max_step && coeff_abs > pivot_coeff_abs {
+                leaving_row = Some(r);
+                leaving_new_val = if (entering_diff_positive && coeff < 0.0)
+                    || (!entering_diff_positive && coeff > 0.0)
+                {
+                    self.basic_var_maxs[r]
+                } else {
+                    self.basic_var_mins[r]
+                };
+                pivot_coeff = coeff;
+                pivot_coeff_abs = coeff_abs;
+            }
+        }
+
+        if let Some(row) = leaving_row {
+            self.calc_row_coeffs(row);
+
+            let entering_diff = (self.basic_var_vals[row] - leaving_new_val) / pivot_coeff;
+            let entering_new_val = entering_col_val + entering_diff;
+
+            Ok(Some(PivotInfo {
+                col: entering_col,
+                entering_new_val,
+                entering_diff,
+                elem: Some(PivotElem {
+                    row,
+                    coeff: pivot_coeff,
+                    leaving_new_val,
+                }),
+            }))
+        } else {
+            if entering_other_val.is_infinite() {
+                return Err(Error::Unbounded);
+            }
+
+            Ok(Some(PivotInfo {
+                col: entering_col,
+                entering_new_val: entering_other_val,
+                entering_diff: entering_other_val - entering_col_val,
+                elem: None,
+            }))
+        }
     }
 
     fn choose_pivot_row_dual(&self) -> Option<(usize, f64)> {
@@ -408,7 +571,8 @@ impl SimpleSolver {
                 } else {
                     None
                 }
-            });
+            })
+            .rev();
 
         let most_infeasible =
             infeasibilities.max_by(|(_r1, v1), (_r2, v2)| v1.partial_cmp(v2).unwrap());
@@ -707,5 +871,126 @@ mod tests {
         assert!(solved.is_ok(), "Err: {:?}", solved.err());
 
         println!("{:?}", solver);
+    }
+
+    #[test]
+    fn solve_base_test() {
+        let mut problem = Problem::new(Maximize);
+        let x1 = problem.add_var(5.0, (0.0, INFINITY));
+        let x2 = problem.add_var(5.0, (0.0, INFINITY));
+        let x3 = problem.add_var(3.0, (0.0, INFINITY));
+        problem.add_constraint([(x1, 1.0), (x2, 3.0), (x3, 1.0)], ComparisonOp::Le, 3.0);
+        problem.add_constraint([(x1, -1.0), (x3, 3.0)], ComparisonOp::Le, 2.0);
+        problem.add_constraint([(x1, 2.0), (x2, -1.0), (x3, 2.0)], ComparisonOp::Le, 4.0);
+        problem.add_constraint([(x1, 2.0), (x2, 3.0), (x3, -1.0)], ComparisonOp::Le, 2.0);
+        let res_solver = SimpleSolver::try_new(&problem);
+        assert!(res_solver.is_ok());
+        let mut solver = res_solver.unwrap();
+        let res = solver.solve();
+        assert!(res.is_ok());
+        let solution = res.ok().unwrap();
+        println!("{:?}", solution);
+
+        assert_eq!(solution.objective_value(), 10.0);
+        assert_eq!(solution.var_value(x1), &1.103448275862069);
+        assert_eq!(solution.var_value(x2), &0.2758620689655173);
+        assert_eq!(solution.var_value(x3), &1.0344827586206897);
+    }
+
+    #[test]
+    fn solve_base_test2() {
+        let mut problem = Problem::new(Maximize);
+        let x = problem.add_var(1.0, (0.0, INFINITY));
+        let y = problem.add_var(2.0, (0.0, 3.0));
+
+        problem.add_constraint([(x, 1.0), (y, 1.0)], ComparisonOp::Le, 4.0);
+        problem.add_constraint([(x, 2.0), (y, 1.0)], ComparisonOp::Ge, 2.0);
+
+        let res_solver = SimpleSolver::try_new(&problem);
+        assert!(res_solver.is_ok());
+        let mut solver = res_solver.unwrap();
+        let res = solver.solve();
+        assert!(res.is_ok());
+        let solution = res.ok().unwrap();
+        println!("{:?}", solution);
+
+        assert_eq!(solution.objective_value(), 7.0);
+        assert_eq!(*solution.var_value(x), 1.0);
+        assert_eq!(*solution.var_value(y), 3.0);
+    }
+
+    #[test]
+    fn solve_base_test3() {
+        let mut problem = Problem::new(Minimize);
+        let x = problem.add_var(64.0, (0.0, INFINITY));
+        let y = problem.add_var(26.0, (0.0, INFINITY));
+
+        problem.add_constraint([(x, 2.6), (y, 3.4)], ComparisonOp::Ge, 12.0);
+        problem.add_constraint([(x, 1.1), (y, 3.9)], ComparisonOp::Ge, 10.2);
+        problem.add_constraint([(x, 33.6), (y, 4.8)], ComparisonOp::Ge, 57.5);
+        problem.add_constraint([(x, 1.0), (y, -0.25)], ComparisonOp::Ge, 0.0);
+        problem.add_constraint([(x, 1.0), (y, -2.0)], ComparisonOp::Le, 0.0);
+
+        let res_solver = SimpleSolver::try_new(&problem);
+        assert!(res_solver.is_ok());
+        let mut solver = res_solver.unwrap();
+        let res = solver.solve();
+        assert!(res.is_ok(), "Err: {:?}", res.err());
+        let solution = res.ok().unwrap();
+        println!("{:?}", solution);
+
+        assert_eq!(solution.objective_value(), 151.5507075471698);
+        assert_eq!(*solution.var_value(x), 1.3551493710691815);
+        assert_eq!(*solution.var_value(y), 2.49312106918239);
+    }
+
+    #[test]
+    fn solve_base_test4a() {
+        let mut problem = Problem::new(Maximize);
+        let x1 = problem.add_var(3.0, (0.0, INFINITY));
+        let x2 = problem.add_var(1.0, (0.0, INFINITY));
+        let x3 = problem.add_var(2.0, (0.0, INFINITY));
+
+        problem.add_constraint([(x1, -3.0), (x2, 2.0), (x3, -2.0)], ComparisonOp::Le, 1.0);
+        problem.add_constraint([(x2, 1.0), (x3, 1.0)], ComparisonOp::Le, 3.0);
+        problem.add_constraint([(x1, 2.0), (x3, 1.0)], ComparisonOp::Le, 2.0);
+
+        let res_solver = SimpleSolver::try_new(&problem);
+        assert!(res_solver.is_ok());
+        let mut solver = res_solver.unwrap();
+        let res = solver.solve();
+        assert!(res.is_ok(), "Err: {:?}", res.err());
+        let solution = res.ok().unwrap();
+        println!("{:?}", solution);
+
+        assert_eq!(solution.objective_value(), 5.6);
+        assert_eq!(*solution.var_value(x1), 0.6);
+        assert_eq!(*solution.var_value(x2), 2.2);
+        assert_eq!(*solution.var_value(x3), 0.8);
+    }
+
+    #[test]
+    fn solve_base_test4b() {
+        let mut problem = Problem::new(Maximize);
+        let x1 = problem.add_var(1.0, (0.0, INFINITY));
+        let x2 = problem.add_var(1.0, (0.0, INFINITY));
+        let x3 = problem.add_var(2.0, (0.0, INFINITY));
+
+        problem.add_constraint([(x1, -3.0), (x2, 2.0), (x3, -2.0)], ComparisonOp::Le, 1.0);
+        problem.add_constraint([(x2, 1.0), (x3, 1.0)], ComparisonOp::Le, 3.0);
+        problem.add_constraint([(x1, 2.0), (x3, 1.0)], ComparisonOp::Le, 2.0);
+
+        let res_solver = SimpleSolver::try_new(&problem);
+        assert!(res_solver.is_ok());
+        let mut solver = res_solver.unwrap();
+        let res = solver.solve();
+        assert!(res.is_ok(), "Err: {:?}", res.err());
+        let solution = res.ok().unwrap();
+        println!("{:?}", solution);
+
+        assert_eq!(solution.objective_value(), 5.0);
+        assert_eq!(*solution.var_value(x1), 0.0);
+        assert_eq!(*solution.var_value(x2), 1.0);
+        assert_eq!(*solution.var_value(x3), 2.0);
     }
 }

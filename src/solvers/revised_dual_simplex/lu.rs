@@ -81,11 +81,35 @@ impl LUFactors {
                 let orig_i = col_permutation.orig_from_new[new_i];
                 ans.nonzero.push(orig_i);
                 ans.is_nonzero[orig_i] = true;
-                ans.values[orig_i] = tmp.values[orig_i];
+                ans.values[orig_i] = tmp.values[new_i];
             }
         } else {
             ans = tmp.clone();
         };
+        ans
+    }
+
+    pub fn solve_dense(&self, dense_rhs: &Vec<f64>) -> Vec<f64> {
+        let mut tmp = vec![0.0; dense_rhs.len()];
+        if let Some(row_permutation) = &self.row_permutation {
+            for orig in 0..dense_rhs.len() {
+                tmp[row_permutation.new_from_orig[orig]] = dense_rhs[orig];
+            }
+        } else {
+            tmp.copy_from_slice(dense_rhs);
+        }
+
+        tri_solve_dense_inplace(&self.lower, TriangleSide::Lower, &mut tmp);
+        tri_solve_dense_inplace(&self.upper, TriangleSide::Upper, &mut tmp);
+
+        let mut ans = vec![0.0; dense_rhs.len()];
+        if let Some(col_permutation) = &self.col_permutation {
+            for new in 0..dense_rhs.len() {
+                ans[col_permutation.orig_from_new[new]] = tmp[new];
+            }
+        } else {
+            ans.copy_from_slice(&tmp);
+        }
         ans
     }
 }
@@ -123,6 +147,27 @@ fn tri_solve_process_col(triangle_mat: &TriangleMat, col: usize, rhs: &mut [f64]
     rhs[col] = x_val;
     for (r, &coeff) in triangle_mat.nondiag.col_iter(col) {
         rhs[r] -= x_val * coeff;
+    }
+}
+
+enum TriangleSide {
+    Lower,
+    Upper,
+}
+
+fn tri_solve_dense_inplace(triangle_mat: &TriangleMat, triangle: TriangleSide, rhs: &mut [f64]) {
+    match triangle {
+        TriangleSide::Lower => {
+            for col in 0..triangle_mat.cols() {
+                tri_solve_process_col(triangle_mat, col, rhs);
+            }
+        }
+
+        TriangleSide::Upper => {
+            for col in (0..triangle_mat.cols()).rev() {
+                tri_solve_process_col(triangle_mat, col, rhs);
+            }
+        }
     }
 }
 
