@@ -128,7 +128,7 @@ impl BasisSolver {
             let mut coeff = 0.0;
             // eta col `dot` rhs_transposed
             for (i, &val) in self.eta_matrices.coeff_cols.col_iter(idx) {
-                coeff += val * rhs.get(i);
+                coeff += val * d.get(i);
             }
             let row_leaving = self.eta_matrices.leaving_rows[idx];
             *d.get_mut(row_leaving) -= coeff;

@@ -1,4 +1,4 @@
-use sprs::{CsVecBase, TriMat};
+use sprs::CsVecBase;
 use std::ops::Deref;
 
 pub(crate) fn to_dense<IStorage, DStorage>(vec: &CsVecBase<IStorage, DStorage, f64>) -> Vec<f64>
@@ -36,6 +36,8 @@ pub(crate) fn assert_matrix_eq(mat: &CsMat<f64>, reference: &[Vec<f64>]) {
 
 #[cfg(test)]
 pub fn mat_from_triplets(rows: usize, cols: usize, triplets: &[(usize, usize, f64)]) -> CsMat<f64> {
+    use sprs::TriMat;
+
     let mut mat = TriMat::with_capacity((rows, cols), triplets.len());
     for (r, c, val) in triplets {
         mat.add_triplet(*r, *c, *val);

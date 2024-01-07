@@ -113,7 +113,7 @@ impl SolverTryNew<SimpleSolver> for SimpleSolver {
                 _ if obj_coeffs[v_idx] > 0.0 => (max, false),
                 _ if obj_coeffs[v_idx] < 0.0 && max.is_finite() => (max, true),
                 _ if obj_coeffs[v_idx] < 0.0 => (min, false),
-                _ if min.is_infinite() => (min, true),
+                _ if min.is_finite() => (min, true),
                 _ => (max, true),
             };
             is_dual_feasible &= is_dual_feasible_by;
@@ -170,6 +170,7 @@ impl SolverTryNew<SimpleSolver> for SimpleSolver {
                 .iter()
                 .map(|(var, &coeff)| coeff * nb_var_vals[var])
                 .sum();
+            // dbg!(basic_var_vals.len(), coeffs, cmp_op, rhs, lhs_val);
             basic_var_vals.push(rhs - lhs_val);
         }
 
@@ -333,16 +334,17 @@ impl SimpleSolver {
     fn restore_primal_feasibility(&mut self) -> Result<(), Error> {
         for iter in 0.. {
             if let Some((row, leaving_new_value)) = self.choose_pivot_row_dual() {
-                // println!("row {:?}, leaving_new_value: {:?}", row, leaving_new_value);
+                dbg!(row, leaving_new_value);
                 self.calc_row_coeffs(row);
-                // println!("row coeffs updated to {:?}", self.row_coeffs);
+                // dbg!(&self.row_coeffs);
                 let pivot_info = self.choose_entering_col_dual(row, leaving_new_value)?;
-                // println!("picked pivot_info: {:?}", pivot_info);
+                // debug!("picked pivot_info: {:?}", pivot_info);
+                dbg!(&pivot_info);
                 self.calc_col_coeffs(pivot_info.col);
-                // println!("col coeffs updated to {:?}", self.col_coeffs);
+                // debug!("col coeffs updated to {:?}", self.col_coeffs);
                 self.pivot(&pivot_info);
             } else {
-                debug!(
+                dbg!(
                     "Restored feasibility at {}-th iteration, {}: {}",
                     iter,
                     if self.is_dual_feasible {
@@ -565,10 +567,13 @@ impl SimpleSolver {
             .enumerate()
             .filter_map(|(r, ((&val, &min), &max))| {
                 if val < min - EPS {
+                    // dbg!(r, val, min, max, min - val);
                     Some((r, min - val))
                 } else if val > max + EPS {
+                    // dbg!(r, val, min, max, val - max);
                     Some((r, val - max))
                 } else {
+                    // dbg!(r, val, min, max);
                     None
                 }
             })
@@ -598,6 +603,8 @@ impl SimpleSolver {
         self.basis_solver
             .solve_transpose_for_vector(std::iter::once((r_constr, &1.0)))
             .to_sparse_vec(&mut self.inv_basis_row_coeffs);
+
+        dbg!(&self.inv_basis_row_coeffs);
 
         self.row_coeffs.clear_and_resize(self.nb_vars.len());
         for (r, &coeff) in self.inv_basis_row_coeffs.iter() {
