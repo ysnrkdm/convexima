@@ -184,17 +184,6 @@ impl LUFactorizer for GPLUFactorizer {
                     }
                 }
 
-                for &orig_row in &reachables.reachables {
-                    if new_from_orig_row[orig_row] < i_orig_col {
-                        continue;
-                    }
-
-                    let abs = f64::abs(u_j.values[orig_row]);
-                    if abs > max_abs {
-                        max_abs = abs;
-                    }
-                }
-
                 if max_abs < 1e-8 {
                     return Err(Error::SingularMatrix);
                 }
@@ -233,20 +222,6 @@ impl LUFactorizer for GPLUFactorizer {
             //
 
             for &orig_row in &u_j.nonzero {
-                let val = u_j.values[orig_row];
-                if val == 0.0 {
-                    continue;
-                }
-
-                let new_row = new_from_orig_row[orig_row];
-                match new_row.cmp(&i_orig_col) {
-                    Ordering::Less => upper.push(new_row, val),
-                    Ordering::Equal => upper_diag.push(pivot_val),
-                    Ordering::Greater => lower.push(orig_row, val / pivot_val),
-                }
-            }
-
-            for &orig_row in &reachables.reachables {
                 let val = u_j.values[orig_row];
                 if val == 0.0 {
                     continue;
