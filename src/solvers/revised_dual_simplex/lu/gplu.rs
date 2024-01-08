@@ -145,12 +145,19 @@ impl LUFactorizer for GPLUFactorizer {
             let reachables = topo_sorted_reachables(
                 size,
                 &u_j.nonzero,
-                |new_i| &lower.col_rows(new_i),
+                |new_i| lower.col_rows(new_i),
                 |new_i| new_i < i_orig_col,
                 |orig_row| new_from_orig_row[orig_row],
             );
 
             // println!("{:?} -> {:?}", i_orig_col, reachables);
+
+            for &visited in reachables.visited.iter() {
+                if !u_j.is_nonzero[visited] {
+                    u_j.is_nonzero[visited] = true;
+                    u_j.nonzero.push(visited);
+                }
+            }
 
             for &orig_i in reachables.visited.iter().rev() {
                 //
@@ -158,7 +165,6 @@ impl LUFactorizer for GPLUFactorizer {
                 if new_i < i_orig_col {
                     let x_val = u_j.values[orig_i];
                     for (orig_row, coeff) in lower.col_iter(new_i) {
-                        //
                         u_j.values[orig_row] -= x_val * coeff;
                     }
                 }
