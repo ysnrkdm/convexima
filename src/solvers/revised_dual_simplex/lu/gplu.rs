@@ -137,10 +137,11 @@ impl LUFactorizer for GPLUFactorizer {
             }
         }
 
+        let mut u_j = ScatteredVec::empty(size);
+
         for i_orig_col in 0..size {
             let mat_col = get_col(col_permutation.orig_from_new[i_orig_col]);
-            //
-            let mut u_j = ScatteredVec::empty(size);
+            // You can assume u_j is empty at this point
             u_j.set(mat_col.0.iter().copied().zip(mat_col.1));
             let reachables = topo_sorted_reachables(
                 size,
