@@ -285,7 +285,7 @@ struct DfsStep {
 #[derive(Clone, Debug)]
 pub struct Reachables {
     pub visited: Vec<usize>,
-    reachables: Vec<usize>,
+    // reachables: Vec<usize>,
 }
 
 pub fn topo_sorted_reachables<'a>(
@@ -355,13 +355,13 @@ pub fn topo_sorted_reachables<'a>(
     }
     // println!("visited: {:?}", visited);
 
-    let mut reachables = visited.clone();
-    let b: HashSet<_> = initial_reachables.iter().collect();
-    reachables.retain(|x| !b.contains(x));
+    // let mut reachables = visited.clone();
+    // let b: HashSet<_> = initial_reachables.iter().collect();
+    // reachables.retain(|x| !b.contains(x));
 
     Reachables {
         visited,
-        reachables,
+        // reachables,
     }
 }
 
