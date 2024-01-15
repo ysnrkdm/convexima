@@ -159,12 +159,23 @@ impl LUFactorizer for GPLUFactorizer {
                 }
             }
 
+            // dbg!("visited", &reachables.visited);
+
             for &orig_i in reachables.visited.iter().rev() {
                 //
                 let new_i = new_from_orig_row[orig_i];
                 if new_i < i_orig_col {
                     let x_val = u_j.values[orig_i];
                     for (orig_row, coeff) in lower.col_iter(new_i) {
+                        // dbg!(
+                        //     "u_j updated",
+                        //     i_orig_col,
+                        //     orig_i,
+                        //     new_i,
+                        //     orig_row,
+                        //     u_j.values[orig_row],
+                        //     x_val * coeff
+                        // );
                         u_j.values[orig_row] -= x_val * coeff;
                     }
                 }
@@ -172,6 +183,7 @@ impl LUFactorizer for GPLUFactorizer {
 
             //
             let pivot_orig_row = {
+                // dbg!(&u_j);
                 let mut max_abs = 0.0;
                 for &orig_row in &u_j.nonzero {
                     if new_from_orig_row[orig_row] < i_orig_col {

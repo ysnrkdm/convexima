@@ -294,11 +294,14 @@ impl SolverTryNew<SimpleSolver> for SimpleSolver {
 impl Solver for SimpleSolver {
     fn solve(&mut self) -> Result<Solution, Error> {
         if !self.is_primal_feasible {
+            println!("Primal infeasibility to be solved...");
             self.restore_primal_feasibility()?;
         }
 
         if !self.is_dual_feasible {
+            println!("Preparing obj coeffs...");
             self.recalc_obj_coeffs();
+            println!("Starting optimization...");
             self.optimize()?;
         }
 
@@ -333,13 +336,29 @@ struct PivotElem {
 impl SimpleSolver {
     fn restore_primal_feasibility(&mut self) -> Result<(), Error> {
         for iter in 0.. {
+            if iter % 10000 == 0 {
+                let (num_vars, infeasibility) = self.calc_primal_infeasibility();
+                dbg!(
+                    "restore feasibility iter {}: {}: {}, infeas. vars: {} ({})",
+                    iter,
+                    if self.is_dual_feasible {
+                        "obj."
+                    } else {
+                        "artificial obj."
+                    },
+                    self.cur_obj_val,
+                    num_vars,
+                    infeasibility,
+                );
+            }
+
             if let Some((row, leaving_new_value)) = self.choose_pivot_row_dual() {
-                dbg!(row, leaving_new_value);
+                // dbg!(row, leaving_new_value);
                 self.calc_row_coeffs(row);
                 // dbg!(&self.row_coeffs);
                 let pivot_info = self.choose_entering_col_dual(row, leaving_new_value)?;
                 // debug!("picked pivot_info: {:?}", pivot_info);
-                dbg!(&pivot_info);
+                // dbg!(&pivot_info);
                 self.calc_col_coeffs(pivot_info.col);
                 // debug!("col coeffs updated to {:?}", self.col_coeffs);
                 self.pivot(&pivot_info);
@@ -360,6 +379,27 @@ impl SimpleSolver {
 
         self.is_primal_feasible = true;
         Ok(())
+    }
+
+    /// Number of infeasible basic vars and sum of their infeasibilities.
+    fn calc_primal_infeasibility(&self) -> (usize, f64) {
+        let mut num_vars = 0;
+        let mut infeasibility = 0.0;
+        for ((&val, &min), &max) in self
+            .basic_var_vals
+            .iter()
+            .zip(&self.basic_var_mins)
+            .zip(&self.basic_var_maxs)
+        {
+            if val < min - EPS {
+                num_vars += 1;
+                infeasibility += min - val;
+            } else if val > max + EPS {
+                num_vars += 1;
+                infeasibility += val - max;
+            }
+        }
+        (num_vars, infeasibility)
     }
 
     fn recalc_obj_coeffs(&mut self) {
@@ -393,7 +433,19 @@ impl SimpleSolver {
 
     fn optimize(&mut self) -> Result<(), Error> {
         for iter in 0.. {
+            if iter % 10000 == 0 {
+                let (num_vars, infeasibility) = self.calc_dual_infeasibility();
+                dbg!(
+                    "optimize iter {}: obj.: {}, non-optimal coeffs: {} ({})",
+                    iter,
+                    self.cur_obj_val,
+                    num_vars,
+                    infeasibility,
+                );
+            }
+
             if let Some(pivot_info) = self.choose_pivot()? {
+                // dbg!(&pivot_info);
                 self.pivot(&pivot_info);
             } else {
                 debug!(
@@ -407,6 +459,20 @@ impl SimpleSolver {
 
         self.is_dual_feasible = true;
         Ok(())
+    }
+
+    /// Number of infeasible obj. coeffs and sum of their infeasibilities.
+    /// For debug print purpose
+    fn calc_dual_infeasibility(&self) -> (usize, f64) {
+        let mut num_vars = 0;
+        let mut infeasibility = 0.0;
+        for (&obj_coeff, var_state) in self.nb_var_obj_coeffs.iter().zip(&self.nb_var_states) {
+            if !(var_state.at_min && obj_coeff > -EPS) && !(var_state.at_max && obj_coeff < EPS) {
+                num_vars += 1;
+                infeasibility += obj_coeff.abs();
+            }
+        }
+        (num_vars, infeasibility)
     }
 
     fn get_optimal_variables(&self) -> Vec<f64> {
@@ -604,7 +670,7 @@ impl SimpleSolver {
             .solve_transpose_for_vector(std::iter::once((r_constr, &1.0)))
             .to_sparse_vec(&mut self.inv_basis_row_coeffs);
 
-        dbg!(&self.inv_basis_row_coeffs);
+        // dbg!(&self.inv_basis_row_coeffs);
 
         self.row_coeffs.clear_and_resize(self.nb_vars.len());
         for (r, &coeff) in self.inv_basis_row_coeffs.iter() {

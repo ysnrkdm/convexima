@@ -14,3 +14,4 @@ rand = "*"
 rand_pcg = "*"
 ndarray = "*"
 env_logger = "*"
+procspawn = { version = "*", features = ["test-support"] }
