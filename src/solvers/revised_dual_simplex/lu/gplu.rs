@@ -1,4 +1,4 @@
-use std::{cmp::Ordering, collections::HashSet};
+use std::{cell::RefCell, cmp::Ordering};
 
 use crate::{
     solvers::revised_dual_simplex::lu::TriangleMat,
@@ -284,6 +284,41 @@ struct DfsStep {
 }
 
 #[derive(Clone, Debug)]
+struct TopoScrachSpace {
+    dfs_stack: Vec<DfsStep>,
+    is_visited: Vec<bool>,
+    visited: Vec<usize>,
+}
+
+impl TopoScrachSpace {
+    fn with_capacity(n: usize) -> Self {
+        Self {
+            dfs_stack: Vec::with_capacity(n),
+            is_visited: vec![false; n],
+            visited: vec![],
+        }
+    }
+
+    fn clear(&mut self) {
+        assert!(self.dfs_stack.is_empty());
+        for &i in &self.visited {
+            self.is_visited[i] = false;
+        }
+        self.visited.clear();
+    }
+
+    fn clear_and_resize(&mut self, n: usize) {
+        self.clear();
+        self.dfs_stack.reserve(n);
+        self.is_visited.resize(n, false);
+    }
+
+    fn len(&self) -> usize {
+        self.is_visited.len()
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct Reachables {
     pub visited: Vec<usize>,
     // reachables: Vec<usize>,
@@ -296,74 +331,88 @@ pub fn topo_sorted_reachables<'a>(
     should_visit: impl Fn(usize) -> bool,
     new_from_orig_row: impl Fn(usize) -> usize,
 ) -> Reachables {
-    let mut dfs_stack: Vec<DfsStep> = Vec::with_capacity(n);
-    let mut is_visited = vec![false; n];
-    let mut visited: Vec<usize> = vec![];
+    thread_local! {
+        // Initialize with 1 to cause initialization always at the beginning
+        pub static SCRACH: RefCell<TopoScrachSpace> = RefCell::new(TopoScrachSpace::with_capacity(1))
+    };
 
-    // println!("init {:?}", initial_reachables);
-    for &orig_row in initial_reachables {
-        //
-        let new_row = new_from_orig_row(orig_row);
-        if !should_visit(new_row) {
-            continue;
-        }
-        if is_visited[orig_row] {
-            continue;
+    let reachables = SCRACH.with(|scratch_| {
+        let mut scratch = scratch_.borrow_mut().to_owned();
+
+        if scratch.len() != n {
+            scratch.clear_and_resize(n);
+        } else {
+            scratch.clear();
         }
 
-        //
-        dfs_stack.push(DfsStep {
-            orig_i: orig_row,
-            cur_child: 0,
-        });
-        while let Some(current_node) = dfs_stack.last_mut() {
-            // println!("visiting: {:?}", current_node);
+        let TopoScrachSpace {
+            mut dfs_stack,
+            mut is_visited,
+            mut visited,
+        } = scratch;
+
+        // println!("init {:?}", initial_reachables);
+        for &orig_row in initial_reachables {
             //
-            let new_i = new_from_orig_row(current_node.orig_i);
-            let children = if should_visit(new_i) {
-                get_children(new_i)
-            } else {
-                &[]
-            };
-
-            let cur_i = current_node.orig_i;
-
-            if is_visited[cur_i] {
-                current_node.cur_child += 1;
-            } else {
-                is_visited[cur_i] = true;
+            let new_row = new_from_orig_row(orig_row);
+            if !should_visit(new_row) {
+                continue;
+            }
+            if is_visited[orig_row] {
+                continue;
             }
 
-            while current_node.cur_child < children.len() {
-                let child_orig_row = children[current_node.cur_child];
-                if !is_visited[child_orig_row] {
-                    break;
+            //
+            dfs_stack.push(DfsStep {
+                orig_i: orig_row,
+                cur_child: 0,
+            });
+            while let Some(current_node) = dfs_stack.last_mut() {
+                // println!("visiting: {:?}", current_node);
+                //
+                let new_i = new_from_orig_row(current_node.orig_i);
+                let children = if should_visit(new_i) {
+                    get_children(new_i)
+                } else {
+                    &[]
+                };
+
+                let cur_i = current_node.orig_i;
+
+                if is_visited[cur_i] {
+                    current_node.cur_child += 1;
+                } else {
+                    is_visited[cur_i] = true;
                 }
-                current_node.cur_child += 1;
-            }
 
-            if current_node.cur_child < children.len() {
-                let i_child = current_node.cur_child;
-                dfs_stack.push(DfsStep {
-                    orig_i: children[i_child],
-                    cur_child: 0,
-                });
-            } else {
-                visited.push(cur_i);
-                dfs_stack.pop();
+                while current_node.cur_child < children.len() {
+                    let child_orig_row = children[current_node.cur_child];
+                    if !is_visited[child_orig_row] {
+                        break;
+                    }
+                    current_node.cur_child += 1;
+                }
+
+                if current_node.cur_child < children.len() {
+                    let i_child = current_node.cur_child;
+                    dfs_stack.push(DfsStep {
+                        orig_i: children[i_child],
+                        cur_child: 0,
+                    });
+                } else {
+                    visited.push(cur_i);
+                    dfs_stack.pop();
+                }
             }
         }
-    }
-    // println!("visited: {:?}", visited);
 
-    // let mut reachables = visited.clone();
-    // let b: HashSet<_> = initial_reachables.iter().collect();
-    // reachables.retain(|x| !b.contains(x));
+        Reachables {
+            visited: visited.clone(),
+            // reachables,
+        }
+    });
 
-    Reachables {
-        visited,
-        // reachables,
-    }
+    reachables
 }
 
 #[cfg(test)]
