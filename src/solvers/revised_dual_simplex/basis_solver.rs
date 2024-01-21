@@ -1,3 +1,5 @@
+use std::borrow::BorrowMut;
+
 use crate::{
     consts::STABILITY_COEFF,
     datatype::CsMat,
@@ -88,10 +90,22 @@ impl BasisSolver {
         &mut self,
         rhs_vec: impl Iterator<Item = (usize, &'a f64)>,
     ) -> ScatteredVec {
-        let mut rhs = ScatteredVec::empty(self.eta_matrices.coeff_cols.rows());
-        rhs.set(rhs_vec);
+        thread_local! {
+            pub static SCRATCH_RHS:ScatteredVec = ScatteredVec::empty(1)
+        }
+        SCRATCH_RHS.with(|mut scratch_rhs| {
+            let mut rhs = scratch_rhs.borrow_mut().to_owned();
+            let n = self.eta_matrices.coeff_cols.rows();
 
-        self.solve(&rhs)
+            if rhs.len() != n {
+                rhs.clear_and_resize(n)
+            } else {
+                rhs.clear()
+            }
+            rhs.set(rhs_vec);
+
+            self.solve(&rhs)
+        })
     }
 
     // Solve Bd=a for d where a = rhs
@@ -114,10 +128,22 @@ impl BasisSolver {
         &mut self,
         rhs_vec: impl Iterator<Item = (usize, &'a f64)>,
     ) -> ScatteredVec {
-        let mut rhs = ScatteredVec::empty(self.eta_matrices.coeff_cols.rows());
-        rhs.set(rhs_vec);
+        thread_local! {
+            pub static SCRATCH_RHS:ScatteredVec = ScatteredVec::empty(1)
+        }
+        SCRATCH_RHS.with(|mut scratch_rhs| {
+            let mut rhs = scratch_rhs.borrow_mut().to_owned();
+            let n = self.eta_matrices.coeff_cols.rows();
 
-        self.solve_transpose(&rhs)
+            if rhs.len() != n {
+                rhs.clear_and_resize(n)
+            } else {
+                rhs.clear()
+            }
+            rhs.set(rhs_vec);
+
+            self.solve_transpose(&rhs)
+        })
     }
 
     fn solve_transpose(&self, rhs: &ScatteredVec) -> ScatteredVec {

@@ -168,15 +168,6 @@ impl LUFactorizer for GPLUFactorizer {
                 if new_i < i_orig_col {
                     let x_val = u_j.values[orig_i];
                     for (orig_row, coeff) in lower.col_iter(new_i) {
-                        // dbg!(
-                        //     "u_j updated",
-                        //     i_orig_col,
-                        //     orig_i,
-                        //     new_i,
-                        //     orig_row,
-                        //     u_j.values[orig_row],
-                        //     x_val * coeff
-                        // );
                         u_j.values[orig_row] -= x_val * coeff;
                     }
                 }
