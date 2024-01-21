@@ -1,6 +1,6 @@
 pub mod gplu;
 
-use std::ops::Deref;
+use std::{borrow::BorrowMut, ops::Deref};
 
 use sprs::{CsMat, CsVecBase};
 
@@ -87,6 +87,57 @@ impl LUFactors {
             ans = tmp.clone();
         };
         ans
+    }
+
+    // Inplace version. Takes rhs from the argument, and the answer is populated to the rhs
+    pub fn solve_inplace(&self, rhs: &mut ScatteredVec) {
+        thread_local! {
+            static SCRATCH_RHS:ScatteredVec = ScatteredVec::empty(1)
+        }
+        SCRATCH_RHS.with(|mut scratch_rhs| {
+            let mut tmp = scratch_rhs.borrow_mut().to_owned();
+            let n = rhs.len();
+            if tmp.len() != n {
+                // dbg!(
+                //     "solve_inplace: clearing and resizing the scratch rhs with {}, from {}",
+                //     n,
+                //     tmp.len()
+                // );
+                tmp.clear_and_resize(n)
+            }
+
+            // Prepare the temp vector which permutates the rows
+            if let Some(row_permutation) = &self.row_permutation {
+                tmp.clear();
+                for &orig_i in &rhs.nonzero {
+                    let new_i = row_permutation.new_from_orig[orig_i];
+                    tmp.nonzero.push(new_i);
+                    tmp.is_nonzero[new_i] = true;
+                    tmp.values[new_i] = rhs.values[orig_i];
+                }
+            } else {
+                std::mem::swap(&mut tmp, rhs);
+            };
+
+            // First, Ly = b, where y = Ux. b is given as tmp, and y is returned by tmp
+            tri_solve_sparse_inplace(&self.lower, &mut tmp);
+            // Then, Ux = y. y is given as tmp, and x is returned by tmp
+            tri_solve_sparse_inplace(&self.upper, &mut tmp);
+            // Ok, now we have x in tmp
+
+            // Get result vector which permutates the columns
+            if let Some(col_permutation) = &self.col_permutation {
+                rhs.clear();
+                for &new_i in &tmp.nonzero {
+                    let orig_i = col_permutation.orig_from_new[new_i];
+                    rhs.nonzero.push(orig_i);
+                    rhs.is_nonzero[orig_i] = true;
+                    rhs.values[orig_i] = tmp.values[new_i];
+                }
+            } else {
+                std::mem::swap(rhs, &mut tmp);
+            };
+        })
     }
 
     pub fn solve_dense(&self, dense_rhs: &Vec<f64>) -> Vec<f64> {

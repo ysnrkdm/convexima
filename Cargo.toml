@@ -8,6 +8,7 @@ edition = "2021"
 [dependencies]
 sprs = "0.10"
 log = "*"
+thread-id = "*"
 
 [dev-dependencies]
 rand = "*"

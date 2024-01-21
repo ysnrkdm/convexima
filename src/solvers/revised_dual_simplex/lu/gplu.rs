@@ -1,4 +1,4 @@
-use std::{cell::RefCell, cmp::Ordering};
+use std::{borrow::BorrowMut, cell::RefCell, cmp::Ordering};
 
 use crate::{
     solvers::revised_dual_simplex::lu::TriangleMat,
@@ -176,6 +176,14 @@ impl LUFactorizer for GPLUFactorizer {
             //
             let pivot_orig_row = {
                 // dbg!(&u_j);
+                // let max_abs = u_j
+                //     .nonzero
+                //     .par_iter()
+                //     .filter(|&&orig_row| new_from_orig_row[orig_row] >= i_orig_col)
+                //     .map(|&orig_row| f64::abs(u_j.values[orig_row]))
+                //     .max_by(|x, y| x.partial_cmp(y).unwrap())
+                //     .unwrap_or(0.0);
+
                 let mut max_abs = 0.0;
                 for &orig_row in &u_j.nonzero {
                     if new_from_orig_row[orig_row] < i_orig_col {
@@ -324,14 +332,16 @@ pub fn topo_sorted_reachables<'a>(
 ) -> Reachables {
     thread_local! {
         // Initialize with 1 to cause initialization always at the beginning
-        pub static SCRACH: RefCell<TopoScrachSpace> = RefCell::new(TopoScrachSpace::with_capacity(1))
+        static SCRACH: RefCell<TopoScrachSpace> = RefCell::new(TopoScrachSpace::with_capacity(1))
     };
 
     let reachables = SCRACH.with(|scratch_| {
         let mut scratch = scratch_.borrow_mut().to_owned();
 
         if scratch.len() != n {
+            dbg!("topo", scratch.len(), n, thread_id::get());
             scratch.clear_and_resize(n);
+            dbg!("then", scratch.len(), n, thread_id::get());
         } else {
             scratch.clear();
         }
@@ -397,8 +407,16 @@ pub fn topo_sorted_reachables<'a>(
             }
         }
 
+        let visited_ = visited.clone();
+
+        scratch_.replace_with(|_| TopoScrachSpace {
+            dfs_stack,
+            is_visited,
+            visited,
+        });
+
         Reachables {
-            visited: visited.clone(),
+            visited: visited_,
             // reachables,
         }
     });

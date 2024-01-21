@@ -91,7 +91,7 @@ impl BasisSolver {
         rhs_vec: impl Iterator<Item = (usize, &'a f64)>,
     ) -> ScatteredVec {
         thread_local! {
-            pub static SCRATCH_RHS:ScatteredVec = ScatteredVec::empty(1)
+            static SCRATCH_RHS:ScatteredVec = ScatteredVec::empty(1)
         }
         SCRATCH_RHS.with(|mut scratch_rhs| {
             let mut rhs = scratch_rhs.borrow_mut().to_owned();
@@ -104,24 +104,24 @@ impl BasisSolver {
             }
             rhs.set(rhs_vec);
 
-            self.solve(&rhs)
+            self.solve(&mut rhs)
         })
     }
 
     // Solve Bd=a for d where a = rhs
-    fn solve(&mut self, rhs: &ScatteredVec) -> ScatteredVec {
-        let mut d = self.lu_factors.solve(rhs);
+    fn solve(&mut self, rhs: &mut ScatteredVec) -> ScatteredVec {
+        self.lu_factors.solve_inplace(rhs);
 
         // apply eta matrices (Vanderbei p.139)
         for idx in 0..self.eta_matrices.len() {
             let row_leaving = self.eta_matrices.leaving_rows[idx];
-            let coeff = *d.get(row_leaving);
+            let coeff = *rhs.get(row_leaving);
             for (r, &val) in self.eta_matrices.coeff_cols.col_iter(idx) {
-                *d.get_mut(r) -= coeff * val;
+                *rhs.get_mut(r) -= coeff * val;
             }
         }
 
-        d
+        rhs.clone()
     }
 
     pub fn solve_transpose_for_vector<'a>(
@@ -129,7 +129,7 @@ impl BasisSolver {
         rhs_vec: impl Iterator<Item = (usize, &'a f64)>,
     ) -> ScatteredVec {
         thread_local! {
-            pub static SCRATCH_RHS:ScatteredVec = ScatteredVec::empty(1)
+            static SCRATCH_RHS:ScatteredVec = ScatteredVec::empty(1)
         }
         SCRATCH_RHS.with(|mut scratch_rhs| {
             let mut rhs = scratch_rhs.borrow_mut().to_owned();
@@ -142,25 +142,24 @@ impl BasisSolver {
             }
             rhs.set(rhs_vec);
 
-            self.solve_transpose(&rhs)
+            self.solve_transpose(&mut rhs)
         })
     }
 
-    fn solve_transpose(&self, rhs: &ScatteredVec) -> ScatteredVec {
-        let mut d = rhs.clone();
-
+    fn solve_transpose(&self, rhs: &mut ScatteredVec) -> ScatteredVec {
         // apply eta matrices in reverse (Vanderbei p.139)
         for idx in (0..self.eta_matrices.len()).rev() {
             let mut coeff = 0.0;
             // eta col `dot` rhs_transposed
             for (i, &val) in self.eta_matrices.coeff_cols.col_iter(idx) {
-                coeff += val * d.get(i);
+                coeff += val * rhs.get(i);
             }
             let row_leaving = self.eta_matrices.leaving_rows[idx];
-            *d.get_mut(row_leaving) -= coeff;
+            *rhs.get_mut(row_leaving) -= coeff;
         }
 
-        self.lu_factors_transpose.solve(&d)
+        self.lu_factors_transpose.solve_inplace(rhs);
+        rhs.clone()
     }
 
     pub fn solve_dense_lu_factors_transpose(&self, dense_rhs: &Vec<f64>) -> Vec<f64> {
