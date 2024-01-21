@@ -1,6 +1,6 @@
 pub mod gplu;
 
-use std::{borrow::BorrowMut, ops::Deref};
+use std::{borrow::BorrowMut, cell::RefCell, ops::Deref};
 
 use sprs::{CsMat, CsVecBase};
 
@@ -92,17 +92,17 @@ impl LUFactors {
     // Inplace version. Takes rhs from the argument, and the answer is populated to the rhs
     pub fn solve_inplace(&self, rhs: &mut ScatteredVec) {
         thread_local! {
-            static SCRATCH_RHS:ScatteredVec = ScatteredVec::empty(1)
+            static SCRATCH_RHS:RefCell<ScatteredVec> = RefCell::new(ScatteredVec::empty(1))
         }
-        SCRATCH_RHS.with(|mut scratch_rhs| {
+        SCRATCH_RHS.with(|scratch_rhs| {
             let mut tmp = scratch_rhs.borrow_mut().to_owned();
             let n = rhs.len();
             if tmp.len() != n {
-                // dbg!(
-                //     "solve_inplace: clearing and resizing the scratch rhs with {}, from {}",
-                //     n,
-                //     tmp.len()
-                // );
+                dbg!(
+                    "solve_inplace: clearing and resizing the scratch rhs with {}, from {}",
+                    n,
+                    tmp.len()
+                );
                 tmp.clear_and_resize(n)
             }
 
@@ -137,6 +137,8 @@ impl LUFactors {
             } else {
                 std::mem::swap(rhs, &mut tmp);
             };
+
+            scratch_rhs.replace(tmp);
         })
     }
 

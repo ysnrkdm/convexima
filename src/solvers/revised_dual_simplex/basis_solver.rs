@@ -1,4 +1,4 @@
-use std::borrow::BorrowMut;
+use std::{borrow::BorrowMut, cell::RefCell};
 
 use crate::{
     consts::STABILITY_COEFF,
@@ -91,9 +91,9 @@ impl BasisSolver {
         rhs_vec: impl Iterator<Item = (usize, &'a f64)>,
     ) -> ScatteredVec {
         thread_local! {
-            static SCRATCH_RHS:ScatteredVec = ScatteredVec::empty(1)
+            static SCRATCH_RHS:RefCell<ScatteredVec> = RefCell::new(ScatteredVec::empty(1))
         }
-        SCRATCH_RHS.with(|mut scratch_rhs| {
+        SCRATCH_RHS.with(|scratch_rhs| {
             let mut rhs = scratch_rhs.borrow_mut().to_owned();
             let n = self.eta_matrices.coeff_cols.rows();
 
@@ -104,7 +104,11 @@ impl BasisSolver {
             }
             rhs.set(rhs_vec);
 
-            self.solve(&mut rhs)
+            let ret = self.solve(&mut rhs);
+
+            scratch_rhs.replace(rhs);
+
+            ret
         })
     }
 
@@ -129,9 +133,9 @@ impl BasisSolver {
         rhs_vec: impl Iterator<Item = (usize, &'a f64)>,
     ) -> ScatteredVec {
         thread_local! {
-            static SCRATCH_RHS:ScatteredVec = ScatteredVec::empty(1)
+            static SCRATCH_RHS:RefCell<ScatteredVec> = RefCell::new(ScatteredVec::empty(1))
         }
-        SCRATCH_RHS.with(|mut scratch_rhs| {
+        SCRATCH_RHS.with(|scratch_rhs| {
             let mut rhs = scratch_rhs.borrow_mut().to_owned();
             let n = self.eta_matrices.coeff_cols.rows();
 
@@ -142,7 +146,11 @@ impl BasisSolver {
             }
             rhs.set(rhs_vec);
 
-            self.solve_transpose(&mut rhs)
+            let ret = self.solve_transpose(&mut rhs);
+
+            scratch_rhs.replace(rhs);
+
+            ret
         })
     }
 
