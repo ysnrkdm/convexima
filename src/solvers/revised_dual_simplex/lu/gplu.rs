@@ -17,7 +17,7 @@ struct ColsQueue {
 }
 
 /// Simplest preordering: order columns based on their size
-pub fn order_simple<'a>(col_size: usize, get_col: impl Fn(usize) -> &'a [usize]) -> Permutation {
+fn order_simple<'a>(col_size: usize, get_col: impl Fn(usize) -> &'a [usize]) -> Permutation {
     let mut cols_queue = ColsQueue::new(col_size);
     for c in 0..col_size {
         cols_queue.add(c, get_col(c).len() - 1);
