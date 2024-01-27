@@ -4,6 +4,7 @@ use crate::{problem::Problem, solution::Solution};
 pub enum Error {
     Infeasible,
     Unbounded,
+    Abort,
 }
 
 impl std::fmt::Display for Error {
@@ -11,6 +12,7 @@ impl std::fmt::Display for Error {
         let msg = match self {
             Error::Infeasible => "Problem is infeasible",
             Error::Unbounded => "Problem is unbounded",
+            Error::Abort => "Aborted by system",
         };
         msg.fmt(f)
     }

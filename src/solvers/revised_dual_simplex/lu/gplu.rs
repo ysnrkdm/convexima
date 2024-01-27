@@ -409,7 +409,7 @@ pub fn topo_sorted_reachables<'a>(
 
         let visited_ = visited.clone();
 
-        scratch_.replace_with(|_| TopoScrachSpace {
+        scratch_.replace(TopoScrachSpace {
             dfs_stack,
             is_visited,
             visited,

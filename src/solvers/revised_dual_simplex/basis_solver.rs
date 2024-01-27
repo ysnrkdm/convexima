@@ -87,7 +87,7 @@ impl BasisSolver {
     }
 
     pub fn solve_for_vector<'a>(
-        &mut self,
+        &self,
         rhs_vec: impl Iterator<Item = (usize, &'a f64)>,
     ) -> ScatteredVec {
         thread_local! {
@@ -113,7 +113,7 @@ impl BasisSolver {
     }
 
     // Solve Bd=a for d where a = rhs
-    fn solve(&mut self, rhs: &mut ScatteredVec) -> ScatteredVec {
+    fn solve(&self, rhs: &mut ScatteredVec) -> ScatteredVec {
         self.lu_factors.solve_inplace(rhs);
 
         // apply eta matrices (Vanderbei p.139)
@@ -129,7 +129,7 @@ impl BasisSolver {
     }
 
     pub fn solve_transpose_for_vector<'a>(
-        &mut self,
+        &self,
         rhs_vec: impl Iterator<Item = (usize, &'a f64)>,
     ) -> ScatteredVec {
         thread_local! {

@@ -673,6 +673,7 @@ impl SimpleSolver {
         // dbg!(&self.inv_basis_row_coeffs);
 
         self.row_coeffs.clear_and_resize(self.nb_vars.len());
+
         for (r, &coeff) in self.inv_basis_row_coeffs.iter() {
             for (v, &val) in self.orig_constraints.outer_view(r).unwrap().iter() {
                 if let VarState::NonBasic(idx) = self.var_states[v] {

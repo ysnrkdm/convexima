@@ -53,40 +53,9 @@ impl LUFactors {
 
     // Solve LUx = b, where b is the rhs
     pub fn solve(&self, rhs: &ScatteredVec) -> ScatteredVec {
-        // Prepare the temp vector which permutates the rows
-        let mut tmp;
-        if let Some(row_permutation) = &self.row_permutation {
-            tmp = ScatteredVec::empty(rhs.len());
-            for &orig_i in &rhs.nonzero {
-                let new_i = row_permutation.new_from_orig[orig_i];
-                tmp.nonzero.push(new_i);
-                tmp.is_nonzero[new_i] = true;
-                tmp.values[new_i] = rhs.values[orig_i];
-            }
-        } else {
-            tmp = rhs.clone();
-        };
-
-        // First, Ly = b, where y = Ux. b is given as tmp, and y is returned by tmp
-        tri_solve_sparse_inplace(&self.lower, &mut tmp);
-        // Then, Ux = y. y is given as tmp, and x is returned by tmp
-        tri_solve_sparse_inplace(&self.upper, &mut tmp);
-        // Ok, now we have x in tmp
-
-        // Get result vector which permutates the columns
-        let mut ans;
-        if let Some(col_permutation) = &self.col_permutation {
-            ans = ScatteredVec::empty(tmp.len());
-            for &new_i in &tmp.nonzero {
-                let orig_i = col_permutation.orig_from_new[new_i];
-                ans.nonzero.push(orig_i);
-                ans.is_nonzero[orig_i] = true;
-                ans.values[orig_i] = tmp.values[new_i];
-            }
-        } else {
-            ans = tmp.clone();
-        };
-        ans
+        let mut tmp = rhs.clone();
+        self.solve_inplace(&mut tmp);
+        tmp
     }
 
     // Inplace version. Takes rhs from the argument, and the answer is populated to the rhs
