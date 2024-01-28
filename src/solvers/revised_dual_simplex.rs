@@ -1,6 +1,7 @@
 mod basis_solver;
 mod eta_matrices;
 mod lu;
+mod pivot;
 
 use std::f64::NEG_INFINITY;
 
@@ -16,7 +17,10 @@ use crate::{
     sparse::{ScatteredVec, SparseVec},
 };
 
-use self::basis_solver::BasisSolver;
+use self::{
+    basis_solver::BasisSolver,
+    pivot::{harris_devex::HarrisDevex, PivotChooser},
+};
 
 #[derive(Clone, Debug)]
 enum VarState {
@@ -72,6 +76,7 @@ pub struct SimpleSolver {
 
     //
     basis_solver: BasisSolver,
+    pivot_chooser: HarrisDevex,
 }
 
 impl SolverTryNew<SimpleSolver> for SimpleSolver {
@@ -276,6 +281,7 @@ impl SolverTryNew<SimpleSolver> for SimpleSolver {
             row_coeffs: ScatteredVec::empty(num_total_vars - num_constraints),
             inv_basis_row_coeffs: SparseVec::new(),
             basis_solver: BasisSolver::new(lu_factors, num_constraints),
+            pivot_chooser: HarrisDevex {},
         };
 
         debug!(
@@ -352,11 +358,44 @@ impl SimpleSolver {
                 );
             }
 
-            if let Some((row, leaving_new_value)) = self.choose_pivot_row_dual() {
+            if let Some(row) = self.pivot_chooser.choose_pivot_row_dual(self) {
                 // dbg!(row, leaving_new_value);
                 self.calc_row_coeffs(row);
                 // dbg!(&self.row_coeffs);
-                let pivot_info = self.choose_entering_col_dual(row, leaving_new_value)?;
+                let pivot_info = {
+                    if let Some(col) = self.pivot_chooser.choose_pivot_col_dual(self, row) {
+                        let pivot_coeff = self.row_coeffs.get(col);
+                        let leaving_new_val = {
+                            let val = self.basic_var_vals[row];
+                            let min = self.basic_var_mins[row];
+                            let max = self.basic_var_maxs[row];
+
+                            if val < min {
+                                min
+                            } else if val > max {
+                                max
+                            } else {
+                                unreachable!();
+                            }
+                        };
+                        let entering_diff =
+                            (self.basic_var_vals[row] - leaving_new_val) / pivot_coeff;
+                        let entering_new_val = self.nb_var_vals[col] + entering_diff;
+
+                        PivotInfo {
+                            col,
+                            entering_new_val,
+                            entering_diff,
+                            elem: Some(PivotElem {
+                                row,
+                                coeff: *pivot_coeff,
+                                leaving_new_val,
+                            }),
+                        }
+                    } else {
+                        return Err(Error::Infeasible);
+                    }
+                };
                 // debug!("picked pivot_info: {:?}", pivot_info);
                 // dbg!(&pivot_info);
                 self.calc_col_coeffs(pivot_info.col);
@@ -489,29 +528,11 @@ impl SimpleSolver {
     }
 
     fn choose_pivot(&mut self) -> Result<Option<PivotInfo>, Error> {
-        let entering_col = {
-            let filtered_obj_coeffs = self
-                .nb_var_obj_coeffs
-                .iter()
-                .zip(&self.nb_var_states)
-                .enumerate()
-                .filter_map(|(col, (&obj_coeff, var_state))| match () {
-                    _ if var_state.at_min && obj_coeff > -EPS => None,
-                    _ if var_state.at_max && obj_coeff < EPS => None,
-                    _ => Some((col, obj_coeff)),
-                })
-                .rev();
-
-            let best_col = filtered_obj_coeffs
-                .map(|(col, obj_coeff)| (col, obj_coeff.abs()))
-                .max_by(|(_col1, score1), (_col2, score2)| score1.partial_cmp(score2).unwrap());
-
-            if let Some((col, _score)) = best_col {
-                col
-            } else {
-                return Ok(None);
-            }
-        };
+        let maybe_entering_col = self.pivot_chooser.choose_pivot_col(self);
+        if maybe_entering_col.is_none() {
+            return Ok(None);
+        }
+        let entering_col = maybe_entering_col.unwrap();
 
         let entering_col_val = self.nb_var_vals[entering_col];
         let entering_diff_positive = self.nb_var_obj_coeffs[entering_col] < 0.0;
@@ -523,78 +544,17 @@ impl SimpleSolver {
 
         self.calc_col_coeffs(entering_col);
 
-        let get_leaving_var_step = |r: usize, coeff: f64| {
-            let val = self.basic_var_vals[r];
-            if (entering_diff_positive && coeff < 0.0) || (!entering_diff_positive && coeff > 0.0) {
-                let max = self.basic_var_maxs[r];
-                if val < max {
-                    max - val
-                } else {
-                    0.0
-                }
+        let leaving_row = self.pivot_chooser.choose_pivot_row(&self, entering_col);
+
+        if let Some((row, pivot_coeff)) = leaving_row {
+            let leaving_new_val = if (entering_diff_positive && pivot_coeff < 0.0)
+                || (!entering_diff_positive && pivot_coeff > 0.0)
+            {
+                self.basic_var_maxs[row]
             } else {
-                let min = self.basic_var_mins[r];
-                if val > min {
-                    val - min
-                } else {
-                    0.0
-                }
-            }
-        };
+                self.basic_var_mins[row]
+            };
 
-        // Harris rule. See e.g.
-        // Gill, P. E., Murray, W., Saunders, M. A., & Wright, M. H. (1989).
-        // A practical anti-cycling procedure for linearly constrained optimization.
-        // Mathematical Programming, 45(1-3), 437-474.
-        //
-        // https://link.springer.com/content/pdf/10.1007/BF01589114.pdf
-
-        // First, we determine the max change in entering variable so that basic variables
-        // remain feasible using relaxed bounds.
-        let mut max_step = (entering_other_val - entering_col_val).abs();
-        for (r, &coeff) in self.col_coeffs.iter() {
-            let coeff_abs = coeff.abs();
-            if coeff_abs < EPS {
-                continue;
-            }
-
-            // By which amount can we change the entering variable so that the limit on this
-            // basic var is not violated. The var with the minimum such amount becomes leaving.
-            let cur_step = (get_leaving_var_step(r, coeff) + EPS) / coeff_abs;
-            if cur_step < max_step {
-                max_step = cur_step;
-            }
-        }
-
-        // Second, we choose among variables with steps less than max_step a variable with the biggest
-        // abs. coefficient as the leaving variable. This means that we get numerically more stable
-        // basis at the price of slight infeasibility of some basic variables.
-        let mut leaving_row = None;
-        let mut leaving_new_val = 0.0;
-        let mut pivot_coeff_abs = NEG_INFINITY;
-        let mut pivot_coeff = 0.0;
-        for (r, &coeff) in self.col_coeffs.iter() {
-            let coeff_abs = coeff.abs();
-            if coeff_abs < EPS {
-                continue;
-            }
-
-            let cur_step = get_leaving_var_step(r, coeff) / coeff_abs;
-            if cur_step <= max_step && coeff_abs > pivot_coeff_abs {
-                leaving_row = Some(r);
-                leaving_new_val = if (entering_diff_positive && coeff < 0.0)
-                    || (!entering_diff_positive && coeff > 0.0)
-                {
-                    self.basic_var_maxs[r]
-                } else {
-                    self.basic_var_mins[r]
-                };
-                pivot_coeff = coeff;
-                pivot_coeff_abs = coeff_abs;
-            }
-        }
-
-        if let Some(row) = leaving_row {
             self.calc_row_coeffs(row);
 
             let entering_diff = (self.basic_var_vals[row] - leaving_new_val) / pivot_coeff;
@@ -786,8 +746,8 @@ impl SimpleSolver {
                 entering_diff,
                 elem: Some(PivotElem {
                     row,
-                    leaving_new_val,
                     coeff: pivot_coeff,
+                    leaving_new_val,
                 }),
             })
         } else {
