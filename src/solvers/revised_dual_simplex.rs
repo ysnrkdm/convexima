@@ -3,8 +3,6 @@ mod eta_matrices;
 mod lu;
 mod pivot;
 
-use std::f64::NEG_INFINITY;
-
 use log::debug;
 
 use crate::{
@@ -584,47 +582,6 @@ impl SimpleSolver {
         }
     }
 
-    fn choose_pivot_row_dual(&self) -> Option<(usize, f64)> {
-        let infeasibilities = self
-            .basic_var_vals
-            .iter()
-            .zip(&self.basic_var_mins)
-            .zip(&self.basic_var_maxs)
-            .enumerate()
-            .filter_map(|(r, ((&val, &min), &max))| {
-                if val < min - EPS {
-                    // dbg!(r, val, min, max, min - val);
-                    Some((r, min - val))
-                } else if val > max + EPS {
-                    // dbg!(r, val, min, max, val - max);
-                    Some((r, val - max))
-                } else {
-                    // dbg!(r, val, min, max);
-                    None
-                }
-            })
-            .rev();
-
-        let most_infeasible =
-            infeasibilities.max_by(|(_r1, v1), (_r2, v2)| v1.partial_cmp(v2).unwrap());
-
-        // TODO: this can be simplified
-        most_infeasible.map(|(r, _max_score)| {
-            let val = self.basic_var_vals[r];
-            let min = self.basic_var_mins[r];
-            let max = self.basic_var_maxs[r];
-
-            let new_val = if val < min {
-                min
-            } else if val > max {
-                max
-            } else {
-                unreachable!();
-            };
-            (r, new_val)
-        })
-    }
-
     fn calc_row_coeffs(&mut self, r_constr: usize) {
         self.basis_solver
             .solve_transpose_for_vector(std::iter::once((r_constr, &1.0)))
@@ -649,110 +606,6 @@ impl SimpleSolver {
         self.basis_solver
             .solve_for_vector(orig_col.iter())
             .to_sparse_vec(&mut self.col_coeffs);
-    }
-
-    fn choose_entering_col_dual(
-        &self,
-        row: usize,
-        leaving_new_val: f64,
-    ) -> Result<PivotInfo, Error> {
-        // True if the new obj. coeff. must be nonnegative in a dual-feasible configuration.
-        let leaving_diff_positive = leaving_new_val > self.basic_var_vals[row];
-
-        fn clamp_obj_coeff(mut obj_coeff: f64, var_state: &NonBasicVarState) -> f64 {
-            if var_state.at_min && obj_coeff < 0.0 {
-                obj_coeff = 0.0;
-            }
-            if var_state.at_max && obj_coeff > 0.0 {
-                obj_coeff = 0.0;
-            }
-            obj_coeff
-        }
-
-        let is_eligible_var = |coeff: f64, var_state: &NonBasicVarState| -> bool {
-            let entering_diff_positive = if coeff >= EPS {
-                !leaving_diff_positive
-            } else if coeff <= -EPS {
-                leaving_diff_positive
-            } else {
-                return false;
-            };
-
-            if entering_diff_positive {
-                !var_state.at_max
-            } else {
-                !var_state.at_min
-            }
-        };
-
-        // Harris rule. See e.g.
-        // Gill, P. E., Murray, W., Saunders, M. A., & Wright, M. H. (1989).
-        // A practical anti-cycling procedure for linearly constrained optimization.
-        // Mathematical Programming, 45(1-3), 437-474.
-        //
-        // https://link.springer.com/content/pdf/10.1007/BF01589114.pdf
-
-        // First, we determine the max step (change in the leaving variable obj. coeff that still
-        // leaves us with a dual-feasible state) using relaxed bounds.
-        let mut max_step = f64::INFINITY;
-        for (c, &coeff) in self.row_coeffs.iter() {
-            let var_state = &self.nb_var_states[c];
-            if !is_eligible_var(coeff, var_state) {
-                continue;
-            }
-
-            let obj_coeff = clamp_obj_coeff(self.nb_var_obj_coeffs[c], var_state);
-            let cur_step = (obj_coeff.abs() + EPS) / coeff.abs();
-            if cur_step < max_step {
-                max_step = cur_step;
-            }
-        }
-
-        // Second, we choose among the variables satisfying the relaxed step bound
-        // the one with the biggest pivot coefficient. This allows for a much more
-        // numerically stable basis at the price of slight infeasibility in dual variables.
-        let mut entering_col = None;
-        let mut pivot_coeff_abs = f64::NEG_INFINITY;
-        let mut pivot_coeff = 0.0;
-        for (c, &coeff) in self.row_coeffs.iter() {
-            let var_state = &self.nb_var_states[c];
-            if !is_eligible_var(coeff, var_state) {
-                continue;
-            }
-
-            let obj_coeff = clamp_obj_coeff(self.nb_var_obj_coeffs[c], var_state);
-
-            // If we change obj. coeff of the leaving variable by this amount,
-            // obj. coeff if the current variable will reach the bound of dual infeasibility.
-            // Variable with the tightest such bound is the entering variable.
-            let cur_step = obj_coeff.abs() / coeff.abs();
-            if cur_step <= max_step {
-                let coeff_abs = coeff.abs();
-                if coeff_abs > pivot_coeff_abs {
-                    entering_col = Some(c);
-                    pivot_coeff_abs = coeff_abs;
-                    pivot_coeff = coeff;
-                }
-            }
-        }
-
-        if let Some(col) = entering_col {
-            let entering_diff = (self.basic_var_vals[row] - leaving_new_val) / pivot_coeff;
-            let entering_new_val = self.nb_var_vals[col] + entering_diff;
-
-            Ok(PivotInfo {
-                col,
-                entering_new_val,
-                entering_diff,
-                elem: Some(PivotElem {
-                    row,
-                    coeff: pivot_coeff,
-                    leaving_new_val,
-                }),
-            })
-        } else {
-            Err(Error::Infeasible)
-        }
     }
 
     fn pivot(&mut self, pivot_info: &PivotInfo) {

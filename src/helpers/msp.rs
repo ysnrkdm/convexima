@@ -76,7 +76,7 @@ impl MpsFile {
 
             loop {
                 lines.to_next()?;
-                if !lines.cur.starts_with(" ") {
+                if !lines.cur.starts_with(' ') {
                     break;
                 }
 
@@ -139,7 +139,7 @@ impl MpsFile {
             let mut cur_def = VariableDef::default();
             loop {
                 lines.to_next()?;
-                if !lines.cur.starts_with(" ") {
+                if !lines.cur.starts_with(' ') {
                     break;
                 }
 
@@ -184,7 +184,7 @@ impl MpsFile {
             let mut cur_vec_name = None;
             loop {
                 lines.to_next()?;
-                if !lines.cur.starts_with(" ") {
+                if !lines.cur.starts_with(' ') {
                     break;
                 }
 
@@ -214,7 +214,7 @@ impl MpsFile {
             let mut cur_vec_name = None;
             loop {
                 lines.to_next()?;
-                if !lines.cur.starts_with(" ") {
+                if !lines.cur.starts_with(' ') {
                     break;
                 }
 
@@ -242,7 +242,7 @@ impl MpsFile {
             let mut cur_vec_name = None;
             loop {
                 lines.to_next()?;
-                if !lines.cur.starts_with(" ") {
+                if !lines.cur.starts_with(' ') {
                     break;
                 }
 
@@ -347,7 +347,7 @@ impl<R: io::BufRead> Lines<R> {
                 return Ok(());
             }
 
-            if self.cur.starts_with("*") {
+            if self.cur.starts_with('*') {
                 continue;
             }
 
@@ -391,14 +391,14 @@ impl<'a> Tokens<'a> {
 }
 
 fn parse_f64(input: &str, line_idx: usize) -> io::Result<f64> {
-    input.parse().or_else(|_| {
-        Err(io::Error::new(
+    input.parse().map_err(|_| {
+        io::Error::new(
             io::ErrorKind::InvalidData,
             format!(
                 "line {}: couldn't parse float from string: `{}`",
                 line_idx, input
             ),
-        ))
+        )
     })
 }
 

@@ -1,4 +1,4 @@
-use std::{borrow::BorrowMut, cell::RefCell};
+use std::cell::RefCell;
 
 use crate::{
     consts::STABILITY_COEFF,
