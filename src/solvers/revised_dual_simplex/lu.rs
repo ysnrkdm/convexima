@@ -1,6 +1,6 @@
 pub mod gplu;
 
-use std::{borrow::BorrowMut, cell::RefCell, ops::Deref};
+use std::{cell::RefCell, ops::Deref};
 
 use sprs::{CsMat, CsVecBase};
 

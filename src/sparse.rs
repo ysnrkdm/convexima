@@ -340,11 +340,11 @@ impl TriangleMat {
 
 impl std::fmt::Debug for TriangleMat {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "nondiag:\n")?;
+        writeln!(f, "nondiag:")?;
         for row in self.nondiag.to_csmat().to_csr().outer_iterator() {
-            write!(f, "{:?}\n", to_dense(&row))?
+            writeln!(f, "{:?}", to_dense(&row))?
         }
-        write!(f, "diag: {:?}\n", self.diag)?;
+        writeln!(f, "diag: {:?}", self.diag)?;
         Ok(())
     }
 }

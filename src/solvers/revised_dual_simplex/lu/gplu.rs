@@ -1,4 +1,4 @@
-use std::{borrow::BorrowMut, cell::RefCell, cmp::Ordering};
+use std::{cell::RefCell, cmp::Ordering};
 
 use crate::{
     solvers::revised_dual_simplex::lu::TriangleMat,
