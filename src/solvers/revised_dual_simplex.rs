@@ -3,7 +3,10 @@ mod eta_matrices;
 mod lu;
 mod pivot;
 
+use std::io::{stdout, Write};
+
 use log::debug;
+use stopwatch::Stopwatch;
 
 use crate::{
     consts::{EPS, STABILITY_COEFF},
@@ -339,21 +342,39 @@ struct PivotElem {
 
 impl SimpleSolver {
     fn restore_primal_feasibility(&mut self) -> Result<(), Error> {
+        let mut sw = Stopwatch::new();
+
+        sw.restart();
         for iter in 0.. {
-            if iter % 10000 == 0 {
-                let (num_vars, infeasibility) = self.calc_primal_infeasibility();
-                dbg!(
-                    "restore feasibility iter {}: {}: {}, infeas. vars: {} ({})",
+            if iter % 100 == 0 {
+                if iter % 10000 == 0 {
+                    let (num_vars, infeasibility) = self.calc_primal_infeasibility();
+                    dbg!(
+                        "restore feasibility iter {}: {}: {}, infeas. vars: {} ({})",
+                        iter,
+                        if self.is_dual_feasible {
+                            "obj."
+                        } else {
+                            "artificial obj."
+                        },
+                        self.cur_obj_val,
+                        num_vars,
+                        infeasibility,
+                    );
+                }
+
+                let elapsed = sw.elapsed().as_secs() + 1;
+                print!(
+                    "{}-th iteration, Elapsed {} secs, {} iters per sec\r",
                     iter,
-                    if self.is_dual_feasible {
-                        "obj."
-                    } else {
-                        "artificial obj."
-                    },
-                    self.cur_obj_val,
-                    num_vars,
-                    infeasibility,
+                    elapsed,
+                    iter / elapsed
                 );
+                let _ = stdout().flush();
+            }
+
+            if iter >= 20000 {
+                return Err(Error::Infeasible);
             }
 
             if let Some(row) = self.pivot_chooser.choose_pivot_row_dual(self) {

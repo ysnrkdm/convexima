@@ -9,6 +9,7 @@ edition = "2021"
 sprs = "0.10"
 log = "*"
 thread-id = "*"
+stopwatch = "*"
 
 [dev-dependencies]
 rand = "*"
