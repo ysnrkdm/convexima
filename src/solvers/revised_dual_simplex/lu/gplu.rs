@@ -16,29 +16,6 @@ struct ColsQueue {
     len: usize,
 }
 
-/// Simplest preordering: order columns based on their size
-fn order_simple<'a>(col_size: usize, get_col: impl Fn(usize) -> &'a [usize]) -> Permutation {
-    let mut cols_queue = ColsQueue::new(col_size);
-    for c in 0..col_size {
-        cols_queue.add(c, get_col(c).len() - 1);
-    }
-
-    let mut orig_from_new = Vec::with_capacity(col_size);
-    while orig_from_new.len() < col_size {
-        orig_from_new.push(cols_queue.pop_min().unwrap());
-    }
-
-    let mut new_from_orig = vec![0; col_size];
-    for (new, &orig) in orig_from_new.iter().enumerate() {
-        new_from_orig[orig] = new;
-    }
-
-    Permutation {
-        new_from_orig,
-        orig_from_new,
-    }
-}
-
 impl ColsQueue {
     fn new(num_cols: usize) -> ColsQueue {
         ColsQueue {
@@ -96,6 +73,29 @@ impl ColsQueue {
                 self.head_from_score[score] = Some(self.next[col]);
             }
         }
+    }
+}
+
+/// Simplest preordering: order columns based on their size
+fn order_simple<'a>(col_size: usize, get_col: impl Fn(usize) -> &'a [usize]) -> Permutation {
+    let mut cols_queue = ColsQueue::new(col_size);
+    for c in 0..col_size {
+        cols_queue.add(c, get_col(c).len() - 1);
+    }
+
+    let mut orig_from_new = Vec::with_capacity(col_size);
+    while orig_from_new.len() < col_size {
+        orig_from_new.push(cols_queue.pop_min().unwrap());
+    }
+
+    let mut new_from_orig = vec![0; col_size];
+    for (new, &orig) in orig_from_new.iter().enumerate() {
+        new_from_orig[orig] = new;
+    }
+
+    Permutation {
+        new_from_orig,
+        orig_from_new,
     }
 }
 

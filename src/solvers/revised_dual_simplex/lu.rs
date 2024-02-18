@@ -1,4 +1,5 @@
 pub mod gplu;
+pub mod supernodal_lu;
 
 use std::{cell::RefCell, ops::Deref};
 
@@ -267,16 +268,25 @@ impl std::fmt::Debug for TriangleMat {
 }
 
 #[derive(Clone, Debug)]
-struct Permutation {
-    new_from_orig: Vec<usize>,
-    orig_from_new: Vec<usize>,
+pub struct Permutation {
+    pub new_from_orig: Vec<usize>,
+    pub orig_from_new: Vec<usize>,
+}
+
+impl Permutation {
+    pub fn identity(n: usize) -> Permutation {
+        Permutation {
+            new_from_orig: (0..n).collect(),
+            orig_from_new: (0..n).collect(),
+        }
+    }
 }
 
 pub trait LUFactorizer {
     fn lu_factorize<'a>(
         self,
         col_size: usize,
-        get_col: impl Fn(usize) -> (&'a [usize], &'a [f64]),
+        get_col: impl Fn(usize) -> (&'a [usize], &'a [f64]), // (Index, and Value in f64)
     ) -> Result<LUFactors, Error>;
 }
 
