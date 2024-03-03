@@ -280,6 +280,20 @@ impl Permutation {
             orig_from_new: (0..n).collect(),
         }
     }
+
+    pub fn reorder(&mut self, ordering: Vec<usize>) {
+        let size = self.new_from_orig.len();
+
+        assert_eq!(size, ordering.len());
+
+        for (new_n, &old_n) in ordering.iter().enumerate() {
+            self.new_from_orig[old_n] = new_n;
+        }
+
+        for (orig, &new) in self.new_from_orig.iter().enumerate() {
+            self.orig_from_new[new] = orig;
+        }
+    }
 }
 
 pub trait LUFactorizer {

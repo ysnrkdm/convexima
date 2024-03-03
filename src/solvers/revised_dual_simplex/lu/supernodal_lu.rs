@@ -36,12 +36,26 @@ fn get_perm_c<'a>(
     }
 }
 
+// Returns (elim_tree, updated column permutation)
 fn get_elim_tree<'a>(
-    perm_c: Permutation,
+    perm_c: &Permutation,
     size: usize,
     get_col: impl Fn(usize) -> (&'a [usize], &'a [f64]),
-) -> Vec<usize> {
-    todo!();
+) -> (Vec<usize>, Permutation) {
+    let parent = sp_col_elim_tree(perm_c, size, get_col);
+    let post = tree_post_order(size, &parent);
+
+    let mut etree = Vec::with_capacity(size);
+    // reorder the parent by post
+    for i in 0..size {
+        etree[post[i]] = post[parent[i]];
+    }
+
+    // reorder the perm_c by post
+    let mut perm_c_new = perm_c.clone();
+    perm_c_new.reorder(post);
+
+    (etree, perm_c_new)
 }
 
 /*
@@ -65,7 +79,7 @@ fn get_elim_tree<'a>(
  * Nonsymmetric elimination tree
  */
 fn sp_col_elim_tree<'a>(
-    perm_c: Permutation,
+    perm_c: &Permutation,
     size: usize,
     get_col: impl Fn(usize) -> (&'a [usize], &'a [f64]),
 ) -> Vec<usize> {
@@ -113,7 +127,7 @@ fn sp_col_elim_tree<'a>(
             }
             let rset = pp.find(row);
             let rroot = root[rset];
-            if (rroot != col) {
+            if rroot != col {
                 parent[rroot] = col;
                 cset = pp.link(cset, rset);
                 root[cset] = col;
@@ -122,6 +136,77 @@ fn sp_col_elim_tree<'a>(
     }
 
     parent.clone()
+}
+
+/*
+ *  q = TreePostorder (n, p);
+ *
+ *	Postorder a tree.
+ *	Input:
+ *	  p is a vector of parent pointers for a forest whose
+ *        vertices are the integers 0 to n-1; p[root]==n.
+ *	Output:
+ *	  q is a vector indexed by 0..n-1 such that q[i] is the
+ *	  i-th vertex in a postorder numbering of the tree.
+ *
+ *        ( 2/7/95 modified by X.Li:
+ *          q is a vector indexed by 0:n-1 such that vertex i is the
+ *          q[i]-th vertex in a postorder numbering of the tree.
+ *          That is, this is the inverse of the previous q. )
+ *
+ *	In the child structure, lower-numbered children are represented
+ *	first, so that a tree which is already numbered in postorder
+ *	will not have its order changed.
+ *
+ *  Written by John Gilbert, Xerox, 10 Dec 1990.
+ *  Based on code written by John Gilbert at CMI in 1987.
+ */
+fn tree_post_order(n: usize, parent: &Vec<usize>) -> Vec<usize> {
+    let mut first_kid = vec![usize::MAX; n + 1];
+    let mut next_kid = vec![0; n + 1];
+    let mut post = vec![0; n + 1];
+
+    let mut dad = 0;
+    for v in n - 1..=0 {
+        dad = parent[v];
+        next_kid[v] = first_kid[dad];
+        first_kid[dad] = v;
+    }
+
+    // nr_etdfs
+    /*
+     * Depth-first search from vertex n.  No recursion.
+     * This routine was contributed by Cédric Doucet, CEDRAT Group, Meylan, France.
+     */
+    let mut postnum = 0;
+    let mut current = n;
+    let mut first = 0;
+    let mut next = 0;
+    while postnum != n {
+        first = first_kid[current];
+        if first == usize::MAX {
+            post[current] = postnum;
+            postnum += 1;
+            next = next_kid[current];
+
+            while next == usize::MAX {
+                current = parent[current];
+                post[current] = postnum;
+                postnum += 1;
+                next = next_kid[current];
+            }
+
+            if postnum == n + 1 {
+                return post;
+            }
+
+            current = next;
+        } else {
+            current = first;
+        }
+    }
+
+    return post;
 }
 
 struct DisjointSet {
@@ -156,10 +241,6 @@ impl DisjointSet {
 
         p
     }
-}
-
-fn tree_post_order(n: usize, elim_tree: Vec<usize>) -> Vec<usize> {
-    todo!();
 }
 
 #[cfg(test)]
@@ -212,7 +293,7 @@ mod tests {
             ],
         );
 
-        let actual = sp_col_elim_tree(Permutation::identity(nsize), nsize, |c| {
+        let actual = sp_col_elim_tree(&Permutation::identity(nsize), nsize, |c| {
             test_mat.outer_view(c).unwrap().into_raw_storage()
         });
 
@@ -243,7 +324,7 @@ mod tests {
             ],
         );
 
-        let actual = sp_col_elim_tree(Permutation::identity(nsize), nsize, |c| {
+        let actual = sp_col_elim_tree(&Permutation::identity(nsize), nsize, |c| {
             test_mat.outer_view(c).unwrap().into_raw_storage()
         });
 
