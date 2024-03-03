@@ -167,7 +167,7 @@ fn tree_post_order(n: usize, parent: &Vec<usize>) -> Vec<usize> {
     let mut post = vec![0; n + 1];
 
     let mut dad = 0;
-    for v in n - 1..=0 {
+    for v in (0..n).rev() {
         dad = parent[v];
         next_kid[v] = first_kid[dad];
         first_kid[dad] = v;
@@ -301,6 +301,10 @@ mod tests {
 
         assert_eq!(Vec::from_iter(1..=10), actual);
         println!("{:?}", actual);
+
+        let post_order = tree_post_order(nsize, &actual);
+        assert_eq!(Vec::from_iter(0..=nsize), post_order);
+        println!("{:?}", post_order);
     }
 
     #[test]
@@ -332,5 +336,9 @@ mod tests {
 
         assert_eq!(vec![1, 3, 3, 4, 5], actual);
         println!("{:?}", actual);
+
+        let post_order = tree_post_order(nsize, &actual);
+        assert_eq!(Vec::from_iter(0..=nsize), post_order);
+        println!("{:?}", post_order);
     }
 }
