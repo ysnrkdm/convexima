@@ -341,4 +341,12 @@ mod tests {
         assert_eq!(Vec::from_iter(0..=nsize), post_order);
         println!("{:?}", post_order);
     }
+
+    #[test]
+    fn test_tree_post_order() {
+        let nsize = 5;
+        let post_order = tree_post_order(nsize, &vec![3, 5, 1, 1, 3]);
+        assert_eq!(vec![1, 4, 0, 3, 2, 5], post_order);
+        println!("{:?}", post_order);
+    }
 }
