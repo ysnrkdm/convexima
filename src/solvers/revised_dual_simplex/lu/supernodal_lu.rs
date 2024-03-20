@@ -1,3 +1,5 @@
+use std::cell::RefCell;
+
 use crate::sparse::ScatteredVec;
 
 use super::{LUFactorizer, Permutation};
@@ -12,6 +14,9 @@ impl LUFactorizer for SupernodalLU {
         col_size: usize,
         get_col: impl Fn(usize) -> (&'a [usize], &'a [f64]),
     ) -> Result<super::LUFactors, super::Error> {
+        let perm_c = get_perm_c(ColumnPermutationMethod::Natural, col_size, &get_col);
+        let (etree, perm_c_reordered) = get_elim_tree(&perm_c, col_size, &get_col);
+
         todo!()
     }
 }
@@ -26,7 +31,7 @@ enum ColumnPermutationMethod {
 fn get_perm_c<'a>(
     ispec: ColumnPermutationMethod,
     size: usize,
-    get_col: impl Fn(usize) -> (&'a [usize], &'a [f64]),
+    get_col: &impl Fn(usize) -> (&'a [usize], &'a [f64]),
 ) -> Permutation {
     match ispec {
         ColumnPermutationMethod::Natural => Permutation::identity(size),
@@ -40,12 +45,12 @@ fn get_perm_c<'a>(
 fn get_elim_tree<'a>(
     perm_c: &Permutation,
     size: usize,
-    get_col: impl Fn(usize) -> (&'a [usize], &'a [f64]),
+    get_col: &impl Fn(usize) -> (&'a [usize], &'a [f64]),
 ) -> (Vec<usize>, Permutation) {
     let parent = sp_col_elim_tree(perm_c, size, get_col);
     let post = tree_post_order(size, &parent);
 
-    let mut etree = Vec::with_capacity(size);
+    let mut etree = vec![0; size];
     // reorder the parent by post
     for i in 0..size {
         etree[post[i]] = post[parent[i]];
@@ -162,7 +167,7 @@ fn sp_col_elim_tree<'a>(
  *  Based on code written by John Gilbert at CMI in 1987.
  */
 fn tree_post_order(n: usize, parent: &Vec<usize>) -> Vec<usize> {
-    let mut first_kid = vec![usize::MAX; n + 1];
+    let mut first_kid = vec![EMPTY; n + 1];
     let mut next_kid = vec![0; n + 1];
     let mut post = vec![0; n + 1];
 
@@ -184,12 +189,12 @@ fn tree_post_order(n: usize, parent: &Vec<usize>) -> Vec<usize> {
     let mut next = 0;
     while postnum != n {
         first = first_kid[current];
-        if first == usize::MAX {
+        if first == EMPTY {
             post[current] = postnum;
             postnum += 1;
             next = next_kid[current];
 
-            while next == usize::MAX {
+            while next == EMPTY {
                 current = parent[current];
                 post[current] = postnum;
                 postnum += 1;
@@ -206,7 +211,7 @@ fn tree_post_order(n: usize, parent: &Vec<usize>) -> Vec<usize> {
         }
     }
 
-    return post;
+    post
 }
 
 struct DisjointSet {
@@ -243,10 +248,97 @@ impl DisjointSet {
     }
 }
 
+#[derive(Clone, Debug)]
+struct RelaxScratchSpace {
+    descendants: Vec<usize>,
+    relax_end: Vec<usize>,
+}
+
+impl RelaxScratchSpace {
+    fn with_capacity(n: usize) -> Self {
+        Self {
+            descendants: Vec::with_capacity(n),
+            relax_end: Vec::with_capacity(n),
+        }
+    }
+
+    fn clear(&mut self) {
+        self.descendants.clear();
+        self.relax_end.clear();
+    }
+
+    fn clear_and_resize(&mut self, n: usize) {
+        self.clear();
+        self.descendants.resize(n, 0);
+        self.relax_end.resize(n, EMPTY);
+    }
+
+    fn len(&self) -> usize {
+        self.descendants.len()
+    }
+}
+
+fn relax_snode(n: usize, etree: &Vec<usize>, relax_columns: usize) -> Vec<usize> {
+    thread_local! {
+        // Initialize with 1 to cause initialization always at the beginning
+        static SCRACH: RefCell<RelaxScratchSpace> = RefCell::new(RelaxScratchSpace::with_capacity(1))
+    };
+
+    let result = SCRACH.with(|scratch_| {
+        let mut scratch = scratch_.borrow_mut().to_owned();
+
+        if scratch.len() != n {
+            scratch.clear_and_resize(n);
+        } else {
+            scratch.clear();
+        }
+
+        let RelaxScratchSpace {
+            mut descendants,
+            mut relax_end,
+        } = scratch;
+
+        // Main Logic
+        for j in 0..n {
+            let parent = etree[j];
+            if parent != n {
+                descendants[parent] = descendants[parent] + descendants[j] + 1;
+            }
+        }
+
+        let mut j = 0;
+        while j < n {
+            let mut parent = etree[j];
+            let snode_start = j;
+            while parent != n && descendants[parent] < relax_columns {
+                j = parent;
+                parent = etree[j];
+            }
+            relax_end[snode_start] = j;
+            j += 1;
+            while j < n && descendants[j] != 0 {
+                j += 1;
+            }
+        }
+        let ret = relax_end.clone();
+
+        // Wrapping up
+        scratch_.replace(RelaxScratchSpace {
+            descendants,
+            relax_end,
+        });
+
+        ret
+    });
+
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{
-        helpers::helpers::mat_from_triplets, solvers::revised_dual_simplex::lu::pretty_print_csmat,
+        consts::EMPTY, helpers::helpers::mat_from_triplets,
+        solvers::revised_dual_simplex::lu::pretty_print_csmat,
     };
 
     use super::*;
@@ -348,5 +440,39 @@ mod tests {
         let post_order = tree_post_order(nsize, &vec![3, 5, 1, 1, 3]);
         assert_eq!(vec![1, 4, 0, 3, 2, 5], post_order);
         println!("{:?}", post_order);
+    }
+
+    #[test]
+    fn test_relax_snode() {
+        let nsize = 5;
+        let test_mat = mat_from_triplets(
+            nsize,
+            nsize,
+            &[
+                (0, 0, 1.0),
+                (0, 3, 1.0), //
+                (1, 2, 1.0),
+                (1, 3, 1.0),
+                (1, 4, 1.0), //
+                (2, 2, 1.0),
+                (2, 4, 1.0), //
+                (3, 0, 1.0),
+                (3, 1, 1.0), //
+                (4, 1, 1.0),
+                (4, 4, 1.0),
+            ],
+        );
+
+        let (etree, _) = get_elim_tree(
+            &Permutation::identity(nsize),
+            nsize,
+            &(|c| test_mat.outer_view(c).unwrap().into_raw_storage()),
+        );
+
+        println!("{:?}", etree);
+
+        let relaxed = relax_snode(nsize, &etree, 1);
+        println!("{:?}", relaxed);
+        assert_eq!(vec![0, EMPTY, 2, EMPTY, EMPTY], relaxed);
     }
 }

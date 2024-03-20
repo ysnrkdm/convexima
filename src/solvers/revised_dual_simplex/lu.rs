@@ -281,10 +281,16 @@ impl Permutation {
         }
     }
 
-    pub fn reorder(&mut self, ordering: Vec<usize>) {
+    pub fn reorder(&mut self, ordering_in: Vec<usize>) {
         let size = self.new_from_orig.len();
 
-        assert_eq!(size, ordering.len());
+        assert!(
+            size == ordering_in.len()
+                || (size + 1 == ordering_in.len()
+                    && (ordering_in.len() - 1) == *ordering_in.last().unwrap())
+        );
+
+        let ordering = &ordering_in[0..size];
 
         for (new_n, &old_n) in ordering.iter().enumerate() {
             self.new_from_orig[old_n] = new_n;
