@@ -1,6 +1,6 @@
 use std::cell::RefCell;
 
-use crate::sparse::ScatteredVec;
+use crate::{consts::EMPTY, sparse::ScatteredVec};
 
 use super::{LUFactorizer, Permutation};
 
@@ -17,6 +17,164 @@ impl LUFactorizer for SupernodalLU {
         let perm_c = get_perm_c(ColumnPermutationMethod::Natural, col_size, &get_col);
         let (etree, perm_c_reordered) = get_elim_tree(&perm_c, col_size, &get_col);
 
+        let relaxed_snodes = relax_snode(col_size, &etree, 1);
+        let panel_size = 20;
+
+        /*
+         *   m = number of rows in the matrix
+         *   n = number of columns in the matrix
+         *   W = panel size (defaulted to 20)
+         *
+         *   xprune[0:n-1]: xprune[*] points to locations in subscript
+         *	vector lsub[*]. For column i, xprune[i] denotes the point where
+         *	structural pruning begins. I.e. only xlsub[i],..,xprune[i]-1 need
+         *	to be traversed for symbolic factorization.
+         *
+         *   marker[0:3*m-1]: marker[i] = j means that node i has been
+         *	reached when working on column j.
+         *	Storage: relative to original row subscripts
+         *	NOTE: There are 3 of them: marker/marker1 are used for panel dfs,
+         *	      see dpanel_dfs.c; marker2 is used for inner-factorization,
+         *            see dcolumn_dfs.c.
+         *
+         *   parent[0:m-1]: parent vector used during dfs
+         *      Storage: relative to new row subscripts
+         *
+         *   xplore[0:m-1]: xplore[i] gives the location of the next (dfs)
+         *	unexplored neighbor of i in lsub[*]
+         *
+         *   segrep[0:nseg-1]: contains the list of supernodal representatives
+         *	in topological order of the dfs. A supernode representative is the
+         *	last column of a supernode.
+         *      The maximum size of segrep[] is n.
+         *
+         *   repfnz[0:W*m-1]: for a nonzero segment U[*,j] that ends at a
+         *	supernodal representative r, repfnz[r] is the location of the first
+         *	nonzero in this segment.  It is also used during the dfs: repfnz[r]>0
+         *	indicates the supernode r has been explored.
+         *	NOTE: There are W of them, each used for one column of a panel.
+         *
+         *   panel_lsub[0:W*m-1]: temporary for the nonzeros row indices below
+         *      the panel diagonal. These are filled in during dpanel_dfs(), and are
+         *      used later in the inner LU factorization within the panel.
+         *	panel_lsub[]/dense[] pair forms the SPA data structure.
+         *	NOTE: There are W of them.
+         *
+         *   dense[0:W*m-1]: sparse accumulating (SPA) vector for intermediate values;
+         *	    	   NOTE: there are W of them.
+         *
+         *   tempv[0:*]: real temporary used for dense numeric kernels;
+         *	The size of this array is defined by NUM_TEMPV() in slu_ddefs.h.
+         */
+
+        let mut snodes = SuperNodes::new(col_size);
+        // let mut xprune = vec![EMPTY; col_size + 1];
+        let mut xplore = vec![EMPTY; col_size + 1];
+        let mut marker = vec![EMPTY; col_size + 1];
+        let mut marker1 = vec![EMPTY; col_size + 1];
+        let mut marker2 = vec![EMPTY; col_size + 1];
+        let mut dense = vec![0.0; col_size * panel_size + 1];
+        let mut tempv = vec![0.0; col_size * panel_size + 1];
+
+        // L related variables
+        // let mut sup_to_col = vec![EMPTY; col_size + 1]; // xsup
+        // let mut col_to_sup = vec![EMPTY; col_size + 1]; // supno
+        // let mut lsub = vec![EMPTY; col_size + 1]; // compressed L subscripts (indexes)
+        // let mut xlsub = vec![EMPTY; col_size + 1];
+        // let mut lusup = vec![0.0; col_size + 1]; // L supernodes
+        // let mut xlusup = vec![EMPTY; col_size + 1];
+
+        // U related variables
+        // let mut ucol = vec![0.0; col_size + 1]; // U columns
+        // let mut usub = vec![EMPTY; col_size + 1]; // U subscripts
+        // let mut xusub = vec![EMPTY; col_size + 1];
+
+        let mut jcol = 0;
+
+        // Work on one "panel" at a time. A panel is one of the following:
+        //	   (a) a relaxed supernode at the bottom of the etree, or
+        //	   (b) panel_size contiguous columns, defined by the user
+
+        // jcol is the start of a relaxed snode
+        // kcol is the end of a relaxed snode
+        while jcol < col_size {
+            jcol = jcol + 1;
+            if relaxed_snodes[jcol] != EMPTY {
+                // Work on relaxed (artificial) super nodes
+                let kcol = relaxed_snodes[jcol];
+
+                // Factorize the relaxed supernode(jcol:kcol)
+
+                snodes.dsnode_dfs(jcol, kcol, &get_col);
+
+                // let mut nextu = xusub[jcol];
+                // let mut nextlu = xlusup[jcol];
+                // let mut jsupno = col_to_sup[jcol];
+                // let mut fsupc = sup_to_col[jsupno];
+
+                // //
+                // let mut max_icol = 0;
+                // (jcol..=kcol).for_each(|icol| {
+                //     max_icol = icol;
+                //     xusub[icol + 1] = nextu;
+
+                //     let mat_col = get_col(icol);
+                //     mat_col
+                //         .0
+                //         .iter()
+                //         .copied()
+                //         .zip(mat_col.1)
+                //         .for_each(|(krow, kval)| {
+                //             dense[krow] = *kval;
+                //         });
+
+                // // dsnode_bmod
+                // // Performs numeric block updates within the relaxed snode.
+                // {
+                //     // Process the supernodal portion of L\U[*,j]
+                //     (xlsub[fsupc]..xlsub[fsupc + 1])
+                //         .map(|isub| lsub[isub])
+                //         .zip(nextlu..)
+                //         .for_each(|(irow, nextlu)| {
+                //             lusup[nextlu] = dense[irow];
+                //             dense[irow] = 0.0;
+                //         });
+
+                //     xlusup[icol + 1] = nextlu + (xlsub[fsupc]..xlsub[fsupc + 1]).len();
+
+                //     if (fsupc < jcol) {
+                //         let luptr = xlusup[fsupc];
+                //         let nsupr = xlsub[fsupc + 1] - xlsub[fsupc];
+                //         let nsupc = jcol - fsupc; /* Excluding jcol */
+                //         let ufirst = xlusup[jcol]; /* Points to the beginning of column
+                //                                    jcol in supernode L\U(jsupno). */
+                //         let nrow = nsupr - nsupc;
+                //         // dlsolve
+                //         {
+                //             let ldm = nsupr;
+                //             let ncol = nsupc;
+                //             let mut firstcol = 0;
+
+                //             let M0 = lusup[luptr];
+                //             let rhs = lusup[ufirst];
+                //             // Do 2 columns each (can do 8 cols, 4 cols then 2 cols, but for simplicity)
+                //             (0..ncol - 1).step_by(2).for_each(|col| {
+                //                 let M1 = luptr + ldm * col;
+                //                 let M2 = luptr + ldm * (col+1);
+                //                 let x0 = rhs[col]
+                //             });
+                //         }
+
+                //         // dmatvec
+                //     }
+                // }
+                // });
+                // jcol = max_icol;
+            } else {
+                // Work on one panel of panel_size columns
+                todo!("user defined panel size is not supported yet!");
+            }
+        }
         todo!()
     }
 }
@@ -305,6 +463,7 @@ fn relax_snode(n: usize, etree: &Vec<usize>, relax_columns: usize) -> Vec<usize>
                 descendants[parent] = descendants[parent] + descendants[j] + 1;
             }
         }
+        println!("descendants, {:?}", descendants);
 
         let mut j = 0;
         while j < n {
@@ -332,6 +491,138 @@ fn relax_snode(n: usize, etree: &Vec<usize>, relax_columns: usize) -> Vec<usize>
     });
 
     result
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct CompressedColumnVec {
+    col_indices: Vec<usize>,
+    row_indices: Vec<usize>,
+}
+
+impl CompressedColumnVec {
+    pub(crate) fn new() -> Self {
+        Self {
+            col_indices: vec![0],
+            row_indices: vec![],
+        }
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.col_indices.clear();
+        self.row_indices.clear();
+    }
+
+    pub(crate) fn push(&mut self, row: usize) {
+        self.row_indices.push(row);
+    }
+
+    pub(crate) fn seal_column(&mut self) {
+        self.col_indices.push(self.row_indices.len())
+    }
+
+    pub(crate) fn cols(&self) -> usize {
+        self.col_indices.len() - 1
+    }
+}
+
+#[derive(Debug)]
+struct SuperNodes {
+    col_size: usize,
+    // L related variables
+    sup_to_col: Vec<usize>,
+    col_to_sup: Vec<usize>,
+    lsub: CompressedColumnVec,
+    // lsub: Vec<usize>,   // rowind
+    // xlsub: Vec<usize>,  // rowind_colptr
+    lusup: Vec<f64>,    // nzval
+    xlusup: Vec<usize>, // nzval_colptr
+
+    // U related variables
+    ucol: Vec<f64>,
+    usub: Vec<usize>,
+    xusub: Vec<usize>,
+
+    //
+    // xprune: CompressedColumnVec,
+    marker_dsnode_dfs: Vec<usize>, // marker[j] = i means that node i has been reached when working on  column j.
+}
+
+impl SuperNodes {
+    pub fn new(col_size: usize) -> Self {
+        Self {
+            col_size,
+            // L related variables
+            sup_to_col: vec![0; col_size + 1], // xsup
+            col_to_sup: vec![0; col_size + 1], // supno
+            lsub: CompressedColumnVec::new(),  // compressed L subscripts
+            lusup: vec![0.0; col_size + 1],    // L supernodes
+            xlusup: vec![0; col_size + 1],
+
+            // U related variables
+            ucol: vec![0.0; col_size + 1], // U columns
+            usub: vec![0; col_size + 1],   // U subscripts
+            xusub: vec![0; col_size + 1],
+
+            //
+            // xprune: CompressedColumnVec::new(),
+            marker_dsnode_dfs: vec![EMPTY; col_size + 1],
+        }
+    }
+
+    /*
+     *    dsnode_dfs() - Determine the union of the row structures of those
+     *    columns within the relaxed snode.
+     *    Note: The relaxed snodes are leaves of the supernodal etree, therefore,
+     *    the portion outside the rectangular supernode must be zero.
+     */
+    pub fn dsnode_dfs<'a>(
+        &mut self,
+        jcol: usize,
+        kcol: usize,
+        get_col: impl Fn(usize) -> (&'a [usize], &'a [f64]),
+    ) {
+        // row index starting point in lsub
+        let mut nextl = 0;
+        let mut unioned_nonzero_row_indices = vec![0; self.col_size];
+
+        // col_to_sup[jcol] contains the current max supernode number
+        // so +1 to that is the next available supernode number to be applied to [jcol, kcol]
+        self.col_to_sup[jcol] += 1;
+        let nsuper = if jcol == 0 { 0 } else { self.col_to_sup[jcol] };
+
+        for i in jcol..=kcol {
+            // For each nonzero in A[*,i]
+            let mat_col = get_col(i);
+            mat_col.0.iter().copied().for_each(|krow| {
+                // A[krow, i]
+                let kmark = self.marker_dsnode_dfs[krow];
+                if kmark != kcol {
+                    // First time visit krow
+                    self.marker_dsnode_dfs[krow] = kcol;
+                    unioned_nonzero_row_indices[nextl] = krow;
+                    nextl += 1;
+                }
+            });
+        }
+
+        // For columns in [jcol, kcol] -> belongs to the supernode of nsuper
+        (jcol..=kcol).for_each(|col| {
+            self.col_to_sup[col] = nsuper;
+        });
+
+        // If the width of the supernode is greater than 1, copy the subscripts for row indices
+        // (for pruning done later in the process)
+        for i in jcol..=kcol {
+            assert!(self.lsub.cols() == i);
+            for r in 0..nextl {
+                self.lsub.push(unioned_nonzero_row_indices[r]);
+            }
+            self.lsub.seal_column();
+        }
+
+        self.col_to_sup[kcol + 1] = nsuper; // not nsuper + 1 here to increment in the next iteration
+        self.sup_to_col[nsuper + 1] = kcol + 1;
+    }
 }
 
 #[cfg(test)]
@@ -463,6 +754,8 @@ mod tests {
             ],
         );
 
+        pretty_print_csmat(&test_mat);
+
         let (etree, _) = get_elim_tree(
             &Permutation::identity(nsize),
             nsize,
@@ -471,8 +764,57 @@ mod tests {
 
         println!("{:?}", etree);
 
-        let relaxed = relax_snode(nsize, &etree, 1);
+        let relaxed = relax_snode(nsize, &etree, 3);
         println!("{:?}", relaxed);
-        assert_eq!(vec![0, EMPTY, 2, EMPTY, EMPTY], relaxed);
+        assert_eq!(vec![1, EMPTY, 2, EMPTY, EMPTY], relaxed);
+    }
+
+    #[test]
+    fn test_dsnode_dfs() {
+        let nsize = 5;
+        let test_mat = mat_from_triplets(
+            nsize,
+            nsize,
+            &[
+                (0, 0, 1.0),
+                (0, 3, 1.0), //
+                (1, 2, 1.0),
+                (1, 3, 1.0),
+                (1, 4, 1.0), //
+                (2, 2, 1.0),
+                (2, 4, 1.0), //
+                (3, 0, 1.0),
+                (3, 1, 1.0), //
+                (4, 1, 1.0),
+                (4, 4, 1.0),
+            ],
+        );
+
+        pretty_print_csmat(&test_mat);
+
+        let mut snodes = SuperNodes::new(nsize);
+        snodes.dsnode_dfs(0, 1, |c| test_mat.outer_view(c).unwrap().into_raw_storage());
+
+        println!("{:?}", snodes);
+
+        // 0th to 1st nodes and 2nd nodes pointing to 0
+        assert_eq!(vec![0, 0, 0, 0, 0, 0], snodes.col_to_sup);
+        // node-0 are columns from 0th (0th in this array) to 2nd (1st in this array) columns
+        assert_eq!(vec![0, 2, 0, 0, 0, 0], snodes.sup_to_col);
+        // For 0 and 1st columns -> [0,3,4] are non-zero rows
+        assert_eq!(vec![0, 3, 6], snodes.lsub.col_indices);
+        assert_eq!(vec![0, 3, 4, 0, 3, 4], snodes.lsub.row_indices);
+
+        snodes.dsnode_dfs(2, 4, |c| test_mat.outer_view(c).unwrap().into_raw_storage());
+
+        println!("{:?}", snodes);
+
+        assert_eq!(vec![0, 0, 1, 1, 1, 1], snodes.col_to_sup);
+        assert_eq!(vec![0, 2, 5, 0, 0, 0], snodes.sup_to_col);
+        assert_eq!(vec![0, 3, 6, 10, 14, 18], snodes.lsub.col_indices);
+        assert_eq!(
+            vec![0, 3, 4, 0, 3, 4, 1, 2, 0, 4, 1, 2, 0, 4, 1, 2, 0, 4],
+            snodes.lsub.row_indices
+        );
     }
 }
