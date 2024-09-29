@@ -529,13 +529,13 @@ impl CompressedColumnVec {
 struct SuperNodes {
     col_size: usize,
     // L related variables
-    sup_to_col: Vec<usize>,
-    col_to_sup: Vec<usize>,
+    sup_to_col: Vec<usize>, // xsup
+    col_to_sup: Vec<usize>, // supno
     lsub: CompressedColumnVec,
     // lsub: Vec<usize>,   // rowind
     // xlsub: Vec<usize>,  // rowind_colptr
     lusup: Vec<f64>,    // nzval
-    xlusup: Vec<usize>, // nzval_colptr
+    xlusup: Vec<usize>, // nzval_colptr: for ith col, lusup[i] to lusup[j] are values
 
     // U related variables
     ucol: Vec<f64>,
@@ -623,6 +623,54 @@ impl SuperNodes {
         self.col_to_sup[kcol + 1] = nsuper; // not nsuper + 1 here to increment in the next iteration
         self.sup_to_col[nsuper + 1] = kcol + 1;
     }
+
+    pub fn dsnode_bmod<'a>(
+        &mut self,
+        jcol: usize,
+        get_col: impl Fn(usize) -> (&'a [usize], &'a [f64]),
+        dense_vec: &mut Vec<f64>,
+    ) {
+        // Process the supernodal portion of L\U[*,jcol]
+
+        // dtrsv: x <- A^(-1)x
+        // Solve one of the systems of the form Ax = b, where A is a lower triangular matrix
+
+        // dgemv: y <- alpha*A*x + beta*y where alpha and beta = -1
+        // Perform matrix-vector multiplication
+    }
+}
+
+// dtrsv: x <- A^(-1)x
+// Solve one of the systems of the form Ax = b, where A is a lower triangular matrix
+fn dlsolve(n: usize, lda: usize, a: &[f64], x: &[f64]) -> Vec<f64> {
+    // Initialize the solution vector with the same values as x
+    let mut solution = x.to_vec();
+
+    // Perform forward substitution
+    for i in 0..n {
+        let mut sum = 0.0;
+        for j in 0..i {
+            sum += a[i * lda + j] * solution[j];
+        }
+        solution[i] = (solution[i] - sum) / a[i * lda + i];
+    }
+
+    solution
+}
+
+// dgemv: y <- A*x + y
+// Perform matrix-vector multiplication
+fn dgemv(lda: usize, rows: usize, cols: usize, a: &[f64], x: &[f64]) -> Vec<f64> {
+    let mut y = vec![0.0; rows];
+    for i in 0..rows {
+        let mut sum = 0.0;
+        for j in 0..cols {
+            sum += a[i * lda + j] * x[j];
+        }
+        y[i] = 1.0 * sum + 1.0 * y[i];
+    }
+
+    y
 }
 
 #[cfg(test)]
@@ -816,5 +864,117 @@ mod tests {
             vec![0, 3, 4, 0, 3, 4, 1, 2, 0, 4, 1, 2, 0, 4, 1, 2, 0, 4],
             snodes.lsub.row_indices
         );
+    }
+
+    #[test]
+    fn test_dlsolve() {
+        let n = 3;
+        let lda = 3;
+        let a = vec![
+            1.0, 0.0, 0.0, //
+            2.0, 1.0, 0.0, //
+            3.0, 4.0, 1.0,
+        ];
+        let x = vec![1.0, 2.0, 3.0];
+        let result = dlsolve(n, lda, a.as_slice(), x.as_slice());
+        assert_eq!(result, vec![1.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn test_dlsolve_2() {
+        let n = 3;
+        let lda = 3;
+        let a = vec![
+            1.0, 0.0, 0.0, //
+            2.0, 1.0, 0.0, //
+            3.0, 4.0, 1.0,
+        ];
+        let x = vec![1.0, 2.0, 2.0];
+        let result = dlsolve(n, lda, a.as_slice(), x.as_slice());
+        assert_eq!(result, vec![1.0, 0.0, -1.0]);
+    }
+
+    #[test]
+    fn test_dlsolve_2x2() {
+        let n = 2;
+        let lda = 2;
+        let a = vec![
+            1.0, 0.0, //
+            2.0, 1.0,
+        ];
+        let x = vec![1.0, 2.0];
+        let result = dlsolve(n, lda, a.as_slice(), x.as_slice());
+        assert_eq!(result, vec![1.0, 0.0]);
+    }
+
+    #[test]
+    fn test_dlsolve_4x4() {
+        let n = 4;
+        let lda = 4;
+        let a = vec![
+            1.0, 0.0, 0.0, 0.0, //
+            2.0, 1.0, 0.0, 0.0, //
+            3.0, -4.0, 1.0, 0.0, //
+            4.0, 5.0, 6.0, 1.0,
+        ];
+        let x = vec![1.0, 0.0, 13.0, 9.0];
+        let result = dlsolve(n, lda, a.as_slice(), x.as_slice());
+        assert_eq!(result, vec![1.0, -2.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn test_dlsolve_non_zero_off_diagonal() {
+        let n = 3;
+        let lda = 3;
+        let a = vec![1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0];
+        let x = vec![1.0, 2.0, 3.0];
+        let result = dlsolve(n, lda, a.as_slice(), x.as_slice());
+        assert_eq!(result, vec![1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn test_dgemv_2x2() {
+        let m = 2;
+        let n = 2;
+        let lda = 2;
+        let a = vec![1.0, 2.0, 3.0, 4.0];
+        let x = vec![1.0, 1.0];
+        let y = dgemv(lda, m, n, a.as_slice(), x.as_slice());
+        assert_eq!(y, vec![3.0, 7.0]);
+    }
+
+    #[test]
+    fn test_dgemv_3x3() {
+        let m = 3;
+        let n = 3;
+        let lda = 3;
+        let a = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0];
+        let x = vec![1.0, 1.0, 1.0];
+        let y = dgemv(lda, m, n, a.as_slice(), x.as_slice());
+        assert_eq!(y, vec![6.0, 15.0, 24.0]);
+    }
+
+    #[test]
+    fn test_dgemv_4x4() {
+        let m = 4;
+        let n = 4;
+        let lda = 4;
+        let a = vec![
+            1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0,
+        ];
+        let x = vec![1.0, 1.0, 1.0, 1.0];
+        let y = dgemv(lda, m, n, a.as_slice(), x.as_slice());
+        assert_eq!(y, vec![10.0, 26.0, 42.0, 58.0]);
+    }
+
+    #[test]
+    fn test_dgemv_non_square() {
+        let m = 3;
+        let n = 2;
+        let lda = 2;
+        let a = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let x = vec![1.0, 1.0];
+        let y = dgemv(lda, m, n, a.as_slice(), x.as_slice());
+        assert_eq!(y, vec![3.0, 7.0, 11.0]);
     }
 }
