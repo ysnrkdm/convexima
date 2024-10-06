@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::{cell::RefCell, cmp::min};
 
 use crate::{consts::EMPTY, sparse::ScatteredVec};
 
@@ -73,7 +73,7 @@ impl LUFactorizer for SupernodalLU {
         let mut marker = vec![EMPTY; col_size + 1];
         let mut marker1 = vec![EMPTY; col_size + 1];
         let mut marker2 = vec![EMPTY; col_size + 1];
-        let mut dense = vec![0.0; col_size * panel_size + 1];
+        // let mut dense = vec![0.0; col_size * panel_size + 1];
         let mut tempv = vec![0.0; col_size * panel_size + 1];
 
         // L related variables
@@ -98,7 +98,6 @@ impl LUFactorizer for SupernodalLU {
         // jcol is the start of a relaxed snode
         // kcol is the end of a relaxed snode
         while jcol < col_size {
-            jcol = jcol + 1;
             if relaxed_snodes[jcol] != EMPTY {
                 // Work on relaxed (artificial) super nodes
                 let kcol = relaxed_snodes[jcol];
@@ -107,76 +106,48 @@ impl LUFactorizer for SupernodalLU {
 
                 snodes.dsnode_dfs(jcol, kcol, &get_col);
 
-                // let mut nextu = xusub[jcol];
-                // let mut nextlu = xlusup[jcol];
-                // let mut jsupno = col_to_sup[jcol];
-                // let mut fsupc = sup_to_col[jsupno];
-
-                // //
-                // let mut max_icol = 0;
-                // (jcol..=kcol).for_each(|icol| {
-                //     max_icol = icol;
-                //     xusub[icol + 1] = nextu;
-
-                //     let mat_col = get_col(icol);
-                //     mat_col
-                //         .0
-                //         .iter()
-                //         .copied()
-                //         .zip(mat_col.1)
-                //         .for_each(|(krow, kval)| {
-                //             dense[krow] = *kval;
-                //         });
-
-                // // dsnode_bmod
-                // // Performs numeric block updates within the relaxed snode.
-                // {
-                //     // Process the supernodal portion of L\U[*,j]
-                //     (xlsub[fsupc]..xlsub[fsupc + 1])
-                //         .map(|isub| lsub[isub])
-                //         .zip(nextlu..)
-                //         .for_each(|(irow, nextlu)| {
-                //             lusup[nextlu] = dense[irow];
-                //             dense[irow] = 0.0;
-                //         });
-
-                //     xlusup[icol + 1] = nextlu + (xlsub[fsupc]..xlsub[fsupc + 1]).len();
-
-                //     if (fsupc < jcol) {
-                //         let luptr = xlusup[fsupc];
-                //         let nsupr = xlsub[fsupc + 1] - xlsub[fsupc];
-                //         let nsupc = jcol - fsupc; /* Excluding jcol */
-                //         let ufirst = xlusup[jcol]; /* Points to the beginning of column
-                //                                    jcol in supernode L\U(jsupno). */
-                //         let nrow = nsupr - nsupc;
-                //         // dlsolve
-                //         {
-                //             let ldm = nsupr;
-                //             let ncol = nsupc;
-                //             let mut firstcol = 0;
-
-                //             let M0 = lusup[luptr];
-                //             let rhs = lusup[ufirst];
-                //             // Do 2 columns each (can do 8 cols, 4 cols then 2 cols, but for simplicity)
-                //             (0..ncol - 1).step_by(2).for_each(|col| {
-                //                 let M1 = luptr + ldm * col;
-                //                 let M2 = luptr + ldm * (col+1);
-                //                 let x0 = rhs[col]
-                //             });
-                //         }
-
-                //         // dmatvec
-                //     }
-                // }
-                // });
-                // jcol = max_icol;
+                for i in jcol..=kcol {
+                    let mut dense_vec = to_dense(get_col(i));
+                    // For each column in the supernode
+                    snodes.dsnode_bmod(i, &mut dense_vec);
+                }
+                jcol = kcol;
+                //
             } else {
                 // Work on one panel of panel_size columns
-                todo!("user defined panel size is not supported yet!");
+
+                // Adjust panel_size so that a panel won't overlap with the next
+                // relaxed snode.
+                let mut panel_size_for_this_iter = panel_size;
+                for (i, &node) in relaxed_snodes
+                    [jcol + 1..min(jcol + panel_size_for_this_iter, col_size)]
+                    .iter()
+                    .enumerate()
+                {
+                    if node != EMPTY {
+                        panel_size_for_this_iter = i + 1;
+                        break;
+                    }
+                }
+
+                if (jcol + panel_size_for_this_iter) > col_size {
+                    panel_size_for_this_iter = col_size - jcol;
+                }
+
+                // Factorize the panel jcol:jcol+panel_size_for_this_iter
             }
         }
         todo!()
     }
+}
+
+fn to_dense<'a>(indexed_col: (&'a [usize], &'a [f64])) -> Vec<f64> {
+    let (indices, values) = indexed_col;
+    let mut dense = vec![0.0; indices.len()];
+    for (i, &val) in indices.iter().zip(values) {
+        dense[*i] = val;
+    }
+    dense
 }
 
 enum ColumnPermutationMethod {
@@ -523,6 +494,10 @@ impl CompressedColumnVec {
     pub(crate) fn cols(&self) -> usize {
         self.col_indices.len() - 1
     }
+
+    pub(crate) fn row_indices(&self, col: usize) -> &[usize] {
+        &self.row_indices[self.col_indices[col]..self.col_indices[col + 1]]
+    }
 }
 
 #[derive(Debug)]
@@ -624,19 +599,48 @@ impl SuperNodes {
         self.sup_to_col[nsuper + 1] = kcol + 1;
     }
 
-    pub fn dsnode_bmod<'a>(
-        &mut self,
-        jcol: usize,
-        get_col: impl Fn(usize) -> (&'a [usize], &'a [f64]),
-        dense_vec: &mut Vec<f64>,
-    ) {
+    pub fn dsnode_bmod(&mut self, jcol: usize, dense_vec: &mut [f64]) {
+        let mut nextlu = self.xlusup[jcol];
         // Process the supernodal portion of L\U[*,jcol]
+        self.lsub
+            .row_indices(jcol)
+            .iter()
+            .copied()
+            .for_each(|irow| {
+                self.lusup[nextlu] = dense_vec[irow];
+                dense_vec[irow] = 0.0;
+                nextlu += 1;
+            });
 
-        // dtrsv: x <- A^(-1)x
-        // Solve one of the systems of the form Ax = b, where A is a lower triangular matrix
+        self.xlusup[jcol + 1] = nextlu;
 
-        // dgemv: y <- alpha*A*x + beta*y where alpha and beta = -1
-        // Perform matrix-vector multiplication
+        let fsupc = self.sup_to_col[self.col_to_sup[jcol]];
+        if fsupc < jcol {
+            let luptr = self.xlusup[fsupc];
+            let nsupr = self.lsub.col_indices[fsupc + 1] - self.lsub.col_indices[fsupc];
+            let nsupc = jcol - fsupc; /* Excluding jcol */
+            let ufirst = self.xlusup[jcol]; /* Points to the beginning of column jcol in supernode L\U(jsupno). */
+            let nrow = nsupr - nsupc;
+
+            // dlsolve
+            let rhs = dlsolve(nsupc, nsupr, &self.lusup[luptr..], &self.lusup[ufirst..]);
+            self.lusup[ufirst..].copy_from_slice(&rhs);
+
+            // dmatvec
+            let tempv = dgemv(
+                nsupr,
+                nrow,
+                nsupc,
+                &self.lusup[luptr + nsupc..],
+                &self.lusup[ufirst..],
+            );
+
+            // Store the solution in the lusup vector
+            let iptr = ufirst + nsupc;
+            (0..nrow).for_each(|i| {
+                self.lusup[i + iptr] -= tempv[i];
+            });
+        }
     }
 }
 
@@ -676,8 +680,9 @@ fn dgemv(lda: usize, rows: usize, cols: usize, a: &[f64], x: &[f64]) -> Vec<f64>
 #[cfg(test)]
 mod tests {
     use crate::{
-        consts::EMPTY, helpers::helpers::mat_from_triplets,
-        solvers::revised_dual_simplex::lu::pretty_print_csmat,
+        consts::EMPTY,
+        helpers::helpers::mat_from_triplets,
+        solvers::revised_dual_simplex::lu::{pretty_print_csmat, to_dense},
     };
 
     use super::*;
@@ -976,5 +981,40 @@ mod tests {
         let x = vec![1.0, 1.0];
         let y = dgemv(lda, m, n, a.as_slice(), x.as_slice());
         assert_eq!(y, vec![3.0, 7.0, 11.0]);
+    }
+
+    #[test]
+    fn test_dsnode_bmod_basic() {
+        let nsize = 5;
+        let test_mat = mat_from_triplets(
+            nsize,
+            nsize,
+            &[
+                (0, 0, 1.0),
+                (0, 3, 3.0), //
+                (1, 2, 1.0),
+                (1, 3, 2.0),
+                (1, 4, 1.0), //
+                (2, 2, 4.0),
+                (2, 4, 1.0), //
+                (3, 0, 5.0),
+                (3, 1, -12.0), //
+                (4, 1, 2.0),
+                (4, 4, 9.0),
+            ],
+        );
+
+        let mut snodes = SuperNodes::new(nsize);
+        snodes.dsnode_dfs(0, 1, |c| test_mat.outer_view(c).unwrap().into_raw_storage());
+
+        let mut dense_vec = to_dense(&test_mat.outer_view(0).unwrap());
+        snodes.dsnode_bmod(0, &mut dense_vec);
+        assert_eq!(snodes.lusup, vec![1.0, 5.0, 0.0, 0.0, 0.0, 0.0]);
+        assert_eq!(dense_vec, vec![0.0, 0.0, 0.0, 0.0, 0.0]);
+
+        dense_vec = to_dense(&test_mat.outer_view(1).unwrap());
+        snodes.dsnode_bmod(1, &mut dense_vec);
+        assert_eq!(snodes.lusup, vec![1.0, 5.0, 0.0, 0.0, -12.0, 2.0]);
+        assert_eq!(dense_vec, vec![0.0, 0.0, 0.0, 0.0, 0.0]);
     }
 }
